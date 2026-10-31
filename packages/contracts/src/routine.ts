@@ -186,6 +186,7 @@ export class RoutineError extends Schema.TaggedError<RoutineError>()("RoutineErr
 export const RoutineExecutionStatus = Schema.Literals([
   "running",
   "paused",
+  "interrupted",
   "needs_attention",
   "failed",
   "awaiting_review",

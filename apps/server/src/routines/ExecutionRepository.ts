@@ -1,4 +1,5 @@
 import {
+  ModelSelection,
   type ProjectId,
   RoutineDefinition,
   RoutineCouncilRecord,
@@ -6,6 +7,7 @@ import {
   RoutineExecution,
   type RoutineExecutionId,
   RoutineExecutionStep,
+  RoutineStepId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
@@ -46,6 +48,20 @@ interface StepRow {
   readonly started_at: string;
   readonly finished_at: string | null;
 }
+
+/** Where a walk stood before its latest set of steps; resume continues from here. */
+export const WalkFrontier = Schema.Struct({
+  ready: Schema.Array(RoutineStepId),
+  waiting: Schema.Array(RoutineStepId),
+  /** Attempts per step when this set began; a higher done row finished within the set. */
+  attempts: Schema.Record(Schema.String, Schema.Number),
+  /** Checkpoint commit of the execution worktree; null when the set has no agent step. */
+  head: Schema.NullOr(Schema.String),
+  modelSelection: Schema.NullOr(ModelSelection),
+});
+export type WalkFrontier = typeof WalkFrontier.Type;
+const encodeFrontier = Schema.encodeSync(Schema.fromJsonString(WalkFrontier));
+const decodeFrontier = Schema.decodeUnknownEffect(Schema.fromJsonString(WalkFrontier));
 
 export interface ExecutionStepRecord extends RoutineExecutionStep {
   readonly executionId: RoutineExecutionId;
@@ -94,6 +110,13 @@ export class ExecutionRepository extends Context.Service<
       ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
       RoutineError
     >;
+    readonly saveFrontier: (
+      executionId: RoutineExecutionId,
+      frontier: WalkFrontier,
+    ) => Effect.Effect<void, RoutineError>;
+    readonly getFrontier: (
+      executionId: RoutineExecutionId,
+    ) => Effect.Effect<Option.Option<WalkFrontier>, RoutineError>;
     readonly countAttention: () => Effect.Effect<number, RoutineError>;
     readonly setApproval: (input: {
       readonly projectId: ProjectId;
@@ -267,10 +290,32 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => repositoryError("Could not write a routine step.", cause)),
     );
 
+  const saveFrontier: ExecutionRepository["Service"]["saveFrontier"] = (executionId, frontier) =>
+    sql`
+      INSERT OR REPLACE INTO routine_walk_frontiers (execution_id, frontier_json)
+      VALUES (${executionId}, ${encodeFrontier(frontier)})
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not save a routine frontier.", cause)),
+    );
+
+  const getFrontier: ExecutionRepository["Service"]["getFrontier"] = (executionId) =>
+    sql<{ readonly frontier_json: string }>`
+      SELECT frontier_json FROM routine_walk_frontiers WHERE execution_id = ${executionId}
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.flatMap((rows) =>
+        rows[0] === undefined
+          ? Effect.succeedNone
+          : decodeFrontier(rows[0].frontier_json).pipe(Effect.asSome),
+      ),
+      Effect.mapError((cause) => repositoryError("Could not read a routine frontier.", cause)),
+    );
+
   const countAttention: ExecutionRepository["Service"]["countAttention"] = () =>
     sql<{ readonly count: number }>`
       SELECT COUNT(*) AS count FROM routine_executions
-      WHERE status IN ('paused', 'needs_attention', 'awaiting_review')
+      WHERE status IN ('paused', 'interrupted', 'needs_attention', 'awaiting_review')
     `.pipe(
       NodeSqliteClient.readOnly,
       Effect.map((rows) => rows[0]?.count ?? 0),
@@ -282,7 +327,7 @@ const make = Effect.gen(function* () {
       SELECT execution_id, project_id, routine_id, routine_hash, definition_json, brief, status,
              worktree_path, branch, error, created_at, updated_at, finished_at
       FROM routine_executions
-      WHERE status IN ('running', 'paused', 'needs_attention')
+      WHERE status IN ('running', 'paused', 'interrupted', 'needs_attention')
     `.pipe(
       NodeSqliteClient.readOnly,
       Effect.mapError((cause) => repositoryError("Could not list running executions.", cause)),
@@ -461,6 +506,8 @@ const make = Effect.gen(function* () {
     listSummaries,
     listRunning,
     countAttention,
+    saveFrontier,
+    getFrontier,
     listApprovals,
     setApproval,
     deleteApproval,

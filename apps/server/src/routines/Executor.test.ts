@@ -10,6 +10,7 @@ import {
   type RoutineId,
   type RoutineError,
   RoutineStepId,
+  type ServerSettings as ServerSettingsValue,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -22,6 +23,7 @@ import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineProcessRunner } from "./adapters/process.ts";
@@ -44,6 +46,8 @@ interface Fakes {
   readonly exitCode?: number;
   readonly verdictText?: string;
   readonly verdictQueue?: Array<string>;
+  readonly cleanWorktree?: boolean;
+  readonly continued?: Array<string>;
   /** The agent step's thread asks this once; the answers it receives land in `answers`. */
   readonly question?: ReadonlyArray<OrchestrationV2UserInputQuestion>;
   readonly answers?: Array<unknown>;
@@ -117,7 +121,11 @@ const withExecutor = <A, E>(
                   return {
                     code: args[0] === "merge" && fakes.mergeConflict === true ? 1 : 0,
                     output:
-                      args[0] === "status" ? "M file" : args[0] === "diff" ? "src/a.ts\n" : "",
+                      args[0] === "status" && fakes.cleanWorktree !== true
+                        ? "M file"
+                        : args[0] === "diff"
+                          ? "src/a.ts\n"
+                          : "",
                     timedOut: false,
                   };
                 }
@@ -140,8 +148,10 @@ const withExecutor = <A, E>(
               onLaunched,
               onQuestion,
               title,
+              continueThreadId,
             }) =>
               Effect.gen(function* () {
+                fakes.continued?.push(continueThreadId ?? "");
                 if (title.startsWith("Council summary")) {
                   return { threadId: ThreadId.make("summary-thread"), verdictText: "- chose X" };
                 }
@@ -180,6 +190,11 @@ const withExecutor = <A, E>(
               }),
           }),
           Layer.mock(RoutineSkillInstaller)({}),
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed({
+              continueThreadsAfterServerUpdate: false,
+            } as ServerSettingsValue),
+          }),
           NodeCrypto.layer,
         ),
       ),
@@ -870,6 +885,121 @@ it.effect("an edited routine needs re-approval", () =>
       }),
   ),
 );
+
+const resumeRoutine = {
+  version: 1 as const,
+  name: "demo",
+  steps: [
+    {
+      id: RoutineStepId.make("build"),
+      kind: "command" as const,
+      argv: ["make"],
+      next: [RoutineStepId.make("review")],
+    },
+    {
+      id: RoutineStepId.make("review"),
+      kind: "agent" as const,
+      purpose: "Review",
+      verdict: { labels: ["ok"] },
+    },
+  ],
+};
+const resumeId = "routine-execution:resume" as RoutineExecutionId;
+
+const seedInterrupted = Effect.gen(function* () {
+  const repository = yield* ExecutionRepository.ExecutionRepository;
+  const at = "2026-01-01T00:00:00.000Z";
+  const row = {
+    executionId: resumeId,
+    attempt: 1,
+    outputExcerpt: null,
+    error: null,
+    startedAt: at,
+  };
+  yield* repository.setApproval({
+    projectId,
+    routineId,
+    hash: "hash",
+    definition: resumeRoutine,
+    approvedAt: at,
+  });
+  yield* repository.addAllowlist({ projectId, executable: "make", addedAt: at });
+  yield* repository.insertExecution({
+    id: resumeId,
+    projectId,
+    routineId,
+    routineHash: "hash",
+    definition: resumeRoutine,
+    brief: "",
+    status: "running",
+    worktreePath: "/worktrees/kept",
+    branch: "routine/kept",
+    error: null,
+    createdAt: at,
+    updatedAt: at,
+    finishedAt: null,
+  });
+  yield* repository.upsertStep({
+    ...row,
+    stepId: RoutineStepId.make("build"),
+    status: "done",
+    verdict: { label: "pass", reason: "ok" },
+    threadId: null,
+    finishedAt: at,
+  });
+  yield* repository.upsertStep({
+    ...row,
+    stepId: RoutineStepId.make("review"),
+    status: "running",
+    verdict: null,
+    threadId: ThreadId.make("old-thread"),
+    finishedAt: null,
+  });
+  yield* repository.saveFrontier(resumeId, {
+    ready: [RoutineStepId.make("review")],
+    waiting: [],
+    attempts: { build: 1 },
+    head: "",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "default-model" },
+  });
+});
+
+it.effect.each([
+  { clean: true, thread: "old-thread" },
+  { clean: false, thread: "" },
+])("an interrupted execution resumes from its frontier (clean $clean)", ({ clean, thread }) => {
+  const gitCalls: Array<string> = [];
+  const continued: Array<string> = [];
+  return withExecutor(
+    {
+      gitCalls,
+      continued,
+      cleanWorktree: clean,
+      routine: resumeRoutine,
+      seed: seedInterrupted,
+    },
+    (executor, raw) =>
+      Effect.gen(function* () {
+        const before = yield* executor
+          .subscribeExecution(resumeId)
+          .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+        assert.equal(before.execution.status, "interrupted");
+
+        yield* raw.control({ executionId: resumeId, action: "resume" });
+        const finished = yield* executor.subscribeExecution(resumeId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.deepEqual(continued, [thread]);
+        assert.equal(
+          gitCalls.some((call) => call.includes("reset --hard")),
+          !clean,
+        );
+        assert.equal(finished.steps.filter((step) => step.stepId === "build").length, 1);
+      }),
+  );
+});
 
 it.effect("executions left running by a restart are failed and keep their worktree", () => {
   const seededId = "routine-execution:seeded" as RoutineExecutionId;

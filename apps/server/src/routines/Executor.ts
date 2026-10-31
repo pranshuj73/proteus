@@ -49,13 +49,21 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/threads.ts";
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
 import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
 import * as RoutineStore from "./RoutineStore.ts";
-import { commitAll, mergeBranch, worktreeRisks } from "./parallel.ts";
+import {
+  checkpoint,
+  commitAll,
+  mergeBranch,
+  movedSince,
+  restoreCheckpoint,
+  worktreeRisks,
+} from "./parallel.ts";
 import { attemptLimit, nextSteps, resolveReady } from "./routing.ts";
 import {
   buildCouncilPrompt,
@@ -92,6 +100,16 @@ type WalkDecision = Exclude<RoutineControlInput, { readonly action: "pause" }>;
 interface WalkControl {
   pauseRequested: boolean;
   waiter: Deferred.Deferred<WalkDecision> | null;
+}
+
+/** Walk state rebuilt from persisted rows when an execution resumes. */
+interface WalkSeed {
+  readonly ready: ReadonlyArray<RoutineStepId>;
+  readonly waiting: ReadonlyArray<RoutineStepId>;
+  readonly attempts: ReadonlyMap<RoutineStepId, number>;
+  readonly done: ReadonlySet<RoutineStepId>;
+  readonly outputs: ReadonlyMap<RoutineStepId, string>;
+  readonly continueThreads: ReadonlyMap<RoutineStepId, ThreadId>;
 }
 
 export class Executor extends Context.Service<
@@ -143,6 +161,7 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const layerScope = yield* Effect.scope;
   // Step runners resolve their adapters from context; capture it so forked walks outlive the request.
   const skillInstaller = yield* RoutineSkillInstaller;
@@ -319,6 +338,7 @@ const make = Effect.gen(function* () {
       workspaceRoot: string,
       workspaceStrategy: RoutineWorkspaceStrategy,
       modelSelection: ModelSelection | undefined,
+      seed?: WalkSeed,
     ) {
       const { definition } = initial;
       const stepContext: RoutineStepContext = {
@@ -329,9 +349,10 @@ const make = Effect.gen(function* () {
         modelSelection,
       };
 
-      const attempts = new Map<RoutineStepId, number>();
-      const done = new Set<RoutineStepId>();
-      const outputs = new Map<RoutineStepId, string>();
+      const attempts = new Map<RoutineStepId, number>(seed?.attempts);
+      const done = new Set<RoutineStepId>(seed?.done);
+      const continueThreads = new Map<RoutineStepId, ThreadId>(seed?.continueThreads);
+      const outputs = new Map<RoutineStepId, string>(seed?.outputs);
       // Attempts stay unique per row; retries only reset how many count toward the step's limit.
       const attemptBase = new Map<RoutineStepId, number>();
       const control: WalkControl = { pauseRequested: false, waiter: null };
@@ -430,9 +451,12 @@ const make = Effect.gen(function* () {
               branch = { type: "existing_worktree", ...provisioned };
             }
             const strategy = branch ?? workspaceStrategy;
+            const continueThreadId = continueThreads.get(step.id);
+            continueThreads.delete(step.id);
             return yield* runStep(step, {
               ...stepContext,
               workspaceStrategy: strategy,
+              continueThreadId,
               inputs: (step.inputs ?? []).flatMap((stepId) => {
                 const output = outputs.get(stepId);
                 return output === undefined ? [] : [{ stepId, output }];
@@ -515,9 +539,10 @@ const make = Effect.gen(function* () {
         return null;
       });
 
-      let waiting: ReadonlyArray<RoutineStepId> = [];
+      let waiting: ReadonlyArray<RoutineStepId> = seed?.waiting ?? [];
       const startId = definition.start ?? definition.steps[0]?.id;
-      let ready: ReadonlyArray<RoutineStepId> = startId === undefined ? [] : [startId];
+      let ready: ReadonlyArray<RoutineStepId> =
+        seed?.ready ?? (startId === undefined ? [] : [startId]);
       while (ready.length > 0) {
         const approvals = yield* repository.listApprovals(initial.projectId).pipe(Effect.orDie);
         const approved = approvals.get(initial.routineId);
@@ -548,6 +573,19 @@ const make = Effect.gen(function* () {
           if (step === undefined) return yield* fail(`Unknown step "${id}".`);
           steps.push(step);
         }
+
+        const head = steps.some((step) => step.kind === "agent" || step.kind === "skill")
+          ? yield* checkpoint(workspaceStrategy.worktreePath)
+          : null;
+        yield* repository
+          .saveFrontier(initial.id, {
+            ready,
+            waiting,
+            attempts: Object.fromEntries(attempts),
+            head,
+            modelSelection: modelSelection ?? null,
+          })
+          .pipe(Effect.orDie);
 
         // Read-only branches share the execution worktree; the rest fork their own.
         const parallel = steps.length > 1;
@@ -798,13 +836,24 @@ const make = Effect.gen(function* () {
 
     yield* repository.insertExecution(execution);
     yield* notify;
+    yield* launchWalk(
+      execution,
+      workspaceRoot,
+      { type: "existing_worktree", ...worktree },
+      modelSelection,
+    );
+    return { execution };
+  });
+
+  const launchWalk = Effect.fn("Executor.launchWalk")(function* (
+    execution: RoutineExecution,
+    workspaceRoot: string,
+    strategy: RoutineWorkspaceStrategy,
+    modelSelection: ModelSelection | undefined,
+    seed?: WalkSeed,
+  ) {
     const fiber = yield* Effect.forkIn(
-      runExecution(
-        execution,
-        workspaceRoot,
-        { type: "existing_worktree", ...worktree },
-        modelSelection,
-      ).pipe(
+      runExecution(execution, workspaceRoot, strategy, modelSelection, seed).pipe(
         Effect.provide(stepEnv),
         Effect.ensuring(
           Effect.sync(() => {
@@ -816,7 +865,83 @@ const make = Effect.gen(function* () {
       layerScope,
     );
     runningFibers.set(execution.id, fiber);
-    return { execution };
+  });
+
+  /** Continues a walk from its frontier; finished steps keep their verdicts and never rerun. */
+  const resumeWalk = Effect.fn("Executor.resumeWalk")(function* (execution: RoutineExecution) {
+    const stored = yield* repository.getFrontier(execution.id);
+    if (Option.isNone(stored) || execution.worktreePath === null || execution.branch === null) {
+      return yield* new RoutineError({ message: "This execution has no saved place to resume." });
+    }
+    const frontier = stored.value;
+    const project = yield* projectService
+      .getById(execution.projectId)
+      .pipe(
+        Effect.mapError(
+          (cause) => new RoutineError({ message: "Failed to resolve project.", cause }),
+        ),
+      );
+    if (Option.isNone(project)) {
+      return yield* new RoutineError({ message: `Project ${execution.projectId} not found.` });
+    }
+
+    const rows = yield* repository.listSteps(execution.id);
+    const latest = new Map<RoutineStepId, (typeof rows)[number]>();
+    for (const row of rows) {
+      const seen = latest.get(row.stepId);
+      if (seen === undefined || row.attempt > seen.attempt) latest.set(row.stepId, row);
+    }
+    const attempts = new Map([...latest].map(([id, row]) => [id, row.attempt]));
+    const done = new Set<RoutineStepId>();
+    const outputs = new Map<RoutineStepId, string>();
+    for (const [id, row] of latest) {
+      if (row.status !== "done") continue;
+      done.add(id);
+      if (row.outputExcerpt !== null) outputs.set(id, row.outputExcerpt);
+    }
+
+    const reached: RoutineStepId[] = [...frontier.waiting];
+    const unfinished: RoutineStepId[] = [];
+    for (const id of frontier.ready) {
+      const row = latest.get(id);
+      if (row?.status === "done" && row.attempt > (frontier.attempts[id] ?? 0)) {
+        reached.push(...nextSteps(execution.definition, id, row.verdict?.label ?? ""));
+      } else {
+        unfinished.push(id);
+      }
+    }
+
+    const continueThreads = new Map<RoutineStepId, ThreadId>();
+    if (frontier.head !== null) {
+      const { head } = frontier;
+      const worktree = execution.worktreePath;
+      const moved = yield* movedSince(worktree, head).pipe(Effect.provide(stepEnv));
+      if (moved) {
+        yield* restoreCheckpoint(worktree, head).pipe(Effect.provide(stepEnv));
+      } else {
+        for (const id of unfinished) {
+          const threadId = latest.get(id)?.threadId;
+          if (threadId != null) continueThreads.set(id, threadId);
+        }
+      }
+    }
+
+    const next = resolveReady(execution.definition, [...unfinished, ...reached], done);
+    const running: RoutineExecution = {
+      ...execution,
+      status: "running",
+      error: null,
+      updatedAt: yield* nowIso,
+      finishedAt: null,
+    };
+    yield* persistExecution(running);
+    yield* launchWalk(
+      running,
+      project.value.workspaceRoot,
+      { type: "existing_worktree", worktreePath: execution.worktreePath, branch: execution.branch },
+      frontier.modelSelection ?? undefined,
+      { ...next, attempts, done, outputs, continueThreads },
+    );
   });
 
   const cancel: Executor["Service"]["cancel"] = Effect.fn("Executor.cancel")(function* (id) {
@@ -869,6 +994,13 @@ const make = Effect.gen(function* () {
 
   const control: Executor["Service"]["control"] = Effect.fn("Executor.control")(function* (input) {
     const walk = walkControls.get(input.executionId);
+    if (walk === undefined && (input.action === "resume" || input.action === "retry")) {
+      const { execution } = yield* readExecution(input.executionId);
+      if (execution.status !== "interrupted" && execution.status !== "failed") {
+        return yield* new RoutineError({ message: "This execution cannot be resumed." });
+      }
+      return yield* resumeWalk(execution);
+    }
     if (walk === undefined) {
       return yield* new RoutineError({
         message: "This execution is no longer active, so it cannot be controlled.",
@@ -1015,7 +1147,11 @@ const make = Effect.gen(function* () {
   const subscribeExecution: Executor["Service"]["subscribeExecution"] = (id) =>
     subscribeTo(readExecution(id));
 
-  // Fibers do not survive a restart; fail what was left running and keep its worktree.
+  // Fibers do not survive a restart. Walks with a saved place wait to resume; others fail.
+  const autoResume = yield* settings.getSettings.pipe(
+    Effect.map((value) => value.continueThreadsAfterServerUpdate),
+    Effect.orElseSucceed(() => false),
+  );
   const interrupted = yield* repository.listRunning();
   for (const execution of interrupted) {
     const steps = yield* repository.listSteps(execution.id);
@@ -1031,13 +1167,20 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    yield* persistExecution({
+    const resumable = Option.isSome(yield* repository.getFrontier(execution.id));
+    const parked: RoutineExecution = {
       ...execution,
-      status: "failed",
+      status: resumable ? "interrupted" : "failed",
       error: RESTART_ERROR,
       updatedAt: finishedAt,
-      finishedAt,
-    });
+      finishedAt: resumable ? null : finishedAt,
+    };
+    yield* persistExecution(parked);
+    if (resumable && autoResume) {
+      yield* resumeWalk(parked).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("Routine auto-resume failed", { cause })),
+      );
+    }
   }
 
   return Executor.of({

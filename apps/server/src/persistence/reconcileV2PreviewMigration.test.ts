@@ -60,6 +60,7 @@ describe("V2 preview upgrade", () => {
         [78, "RoutineCouncil"],
         [79, "RoutineApprovedDefinition"],
         [80, "RoutineAllowlist"],
+        [81, "RoutineWalkFrontiers"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -163,6 +164,7 @@ describe("V2 preview upgrade", () => {
         [78, "RoutineCouncil"],
         [79, "RoutineApprovedDefinition"],
         [80, "RoutineAllowlist"],
+        [81, "RoutineWalkFrontiers"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

@@ -30,7 +30,7 @@ export function RoutineExecutionControls({
       </Button>
     );
   }
-  if (execution.status === "paused") {
+  if (execution.status === "paused" || execution.status === "interrupted") {
     return (
       <Button
         size="compact"

@@ -26,6 +26,30 @@ export const commitAll = Effect.fn("RoutineParallel.commitAll")(function* (
   yield* git(cwd, ["commit", "-m", message]);
 });
 
+/** Commit a worktree stands on, after committing pending work as the step-start checkpoint. */
+export const checkpoint = Effect.fn("RoutineParallel.checkpoint")(function* (cwd: string) {
+  yield* commitAll(cwd, "Routine checkpoint");
+  return (yield* git(cwd, ["rev-parse", "HEAD"])).output.trim();
+});
+
+/** True when the worktree moved past `head`, either by commits or uncommitted changes. */
+export const movedSince = Effect.fn("RoutineParallel.movedSince")(function* (
+  cwd: string,
+  head: string,
+) {
+  const status = yield* git(cwd, ["status", "--porcelain"]);
+  const current = yield* git(cwd, ["rev-parse", "HEAD"]);
+  return status.output.trim() !== "" || current.output.trim() !== head;
+});
+
+export const restoreCheckpoint = Effect.fn("RoutineParallel.restoreCheckpoint")(function* (
+  cwd: string,
+  head: string,
+) {
+  yield* git(cwd, ["reset", "--hard", head]);
+  yield* git(cwd, ["clean", "-fd"]);
+});
+
 /** What deleting a worktree would lose: uncommitted changes and commits on no remote. */
 export const worktreeRisks = Effect.fn("RoutineParallel.worktreeRisks")(function* (cwd: string) {
   const status = yield* git(cwd, ["status", "--porcelain"]);

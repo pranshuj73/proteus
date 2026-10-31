@@ -23,6 +23,7 @@ const STATUS_BADGE: Record<
 > = {
   running: { variant: "info", label: "Running" },
   paused: { variant: "outline", label: "Paused" },
+  interrupted: { variant: "warning", label: "Interrupted" },
   needs_attention: { variant: "warning", label: "Needs attention" },
   awaiting_review: { variant: "warning", label: "Awaiting review" },
   completed: { variant: "success", label: "Completed" },

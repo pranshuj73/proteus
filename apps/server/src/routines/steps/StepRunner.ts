@@ -37,6 +37,8 @@ export interface RoutineStepContext {
   readonly routineName?: string | undefined;
   readonly workspaceStrategy: RoutineWorkspaceStrategy;
   readonly modelSelection?: ModelSelection | undefined;
+  /** Resumes this interrupted thread instead of launching a new one. */
+  readonly continueThreadId?: ThreadId | undefined;
   /** The council: answers a step thread's user-input request so the run does not wait on a human. */
   readonly answerQuestion?:
     | ((

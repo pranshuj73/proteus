@@ -92,7 +92,7 @@ export const runAgentOrSkillStep = Effect.fn("RoutineSteps.runAgentOrSkillStep")
       ...(step.timeoutMs === undefined ? {} : { timeoutMs: step.timeoutMs }),
     });
 
-  let result = yield* runTurn(prompt);
+  let result = yield* runTurn(prompt, context.continueThreadId);
   let parsed = parseVerdict(result.verdictText, labels);
   // Only multi-label steps can re-prompt: a single label resolves without a verdict line.
   for (
