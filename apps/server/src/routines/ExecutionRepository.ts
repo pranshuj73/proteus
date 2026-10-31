@@ -87,13 +87,18 @@ export class ExecutionRepository extends Context.Service<
       executionId: RoutineExecutionId,
     ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
     readonly listRunning: () => Effect.Effect<RoutineExecution[], RoutineError>;
-    readonly listApprovedHashes: (
+    /** Keyed by routine id; the definition is null for approvals made before it was kept. */
+    readonly listApprovals: (
       projectId: ProjectId,
-    ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
+    ) => Effect.Effect<
+      ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
+      RoutineError
+    >;
     readonly setApproval: (input: {
       readonly projectId: ProjectId;
       readonly routineId: string;
       readonly hash: string;
+      readonly definition: RoutineDefinition;
       readonly approvedAt: string;
     }) => Effect.Effect<void, RoutineError>;
   }
@@ -101,6 +106,7 @@ export class ExecutionRepository extends Context.Service<
 
 const decodeDefinitionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeDefinitionJson = Schema.encodeSync(Schema.fromJsonString(RoutineDefinition));
+const decodeDefinition = Schema.decodeUnknownEffect(RoutineDefinition);
 const decodeExecution = Schema.decodeUnknownEffect(RoutineExecution);
 const decodeCouncilRecord = Schema.decodeUnknownEffect(RoutineCouncilRecord);
 const decodeStep = Schema.decodeUnknownEffect(RoutineExecutionStep);
@@ -256,19 +262,44 @@ const make = Effect.gen(function* () {
       Effect.flatMap((rows) => Effect.forEach(rows, toExecution)),
     );
 
-  const listApprovedHashes: ExecutionRepository["Service"]["listApprovedHashes"] = (projectId) =>
-    sql<{ readonly routine_id: string; readonly approved_hash: string }>`
-      SELECT routine_id, approved_hash FROM routine_approvals WHERE project_id = ${projectId}
+  const listApprovals: ExecutionRepository["Service"]["listApprovals"] = (projectId) =>
+    sql<{
+      readonly routine_id: string;
+      readonly approved_hash: string;
+      readonly approved_definition_json: string | null;
+    }>`
+      SELECT routine_id, approved_hash, approved_definition_json
+      FROM routine_approvals WHERE project_id = ${projectId}
     `.pipe(
       NodeSqliteClient.readOnly,
       Effect.mapError((cause) => repositoryError("Could not list routine approvals.", cause)),
-      Effect.map((rows) => new Map(rows.map((row) => [row.routine_id, row.approved_hash]))),
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          (row.approved_definition_json === null
+            ? Effect.succeed(null)
+            : decodeDefinitionJson(row.approved_definition_json).pipe(
+                Effect.flatMap(decodeDefinition),
+                Effect.orElseSucceed(() => null),
+              )
+          ).pipe(
+            Effect.map(
+              (definition) => [row.routine_id, { hash: row.approved_hash, definition }] as const,
+            ),
+          ),
+        ),
+      ),
+      Effect.map((entries) => new Map(entries)),
     );
 
   const setApproval: ExecutionRepository["Service"]["setApproval"] = (input) =>
     sql`
-      INSERT OR REPLACE INTO routine_approvals (project_id, routine_id, approved_hash, approved_at)
-      VALUES (${input.projectId}, ${input.routineId}, ${input.hash}, ${input.approvedAt})
+      INSERT OR REPLACE INTO routine_approvals (
+        project_id, routine_id, approved_hash, approved_definition_json, approved_at
+      )
+      VALUES (
+        ${input.projectId}, ${input.routineId}, ${input.hash},
+        ${encodeDefinitionJson(input.definition)}, ${input.approvedAt}
+      )
     `.pipe(
       Effect.asVoid,
       Effect.mapError((cause) => repositoryError("Could not write a routine approval.", cause)),
@@ -365,7 +396,7 @@ const make = Effect.gen(function* () {
     upsertSummary,
     listSummaries,
     listRunning,
-    listApprovedHashes,
+    listApprovals,
     setApproval,
     listExecutions,
     getExecution,

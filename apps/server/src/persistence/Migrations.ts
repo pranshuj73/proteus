@@ -81,6 +81,7 @@ import Migration0075 from "./Migrations/075_SubagentDeliveryState.ts";
 import Migration0076 from "./Migrations/076_RoutineExecutions.ts";
 import Migration0077 from "./Migrations/077_RoutineApprovals.ts";
 import Migration0078 from "./Migrations/078_RoutineCouncil.ts";
+import Migration0079 from "./Migrations/079_RoutineApprovedDefinition.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -162,6 +163,7 @@ const migrationEntries = [
   [76, "RoutineExecutions", Migration0076],
   [77, "RoutineApprovals", Migration0077],
   [78, "RoutineCouncil", Migration0078],
+  [79, "RoutineApprovedDefinition", Migration0079],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -25,6 +25,10 @@ export class RoutineGitProvisioner extends Context.Service<
     readonly provisionWorktree: (
       input: RoutineWorktreeInput,
     ) => Effect.Effect<RoutineWorktree, RoutineError>;
+    readonly removeWorktree: (input: {
+      readonly workspaceRoot: string;
+      readonly worktreePath: string;
+    }) => Effect.Effect<void, RoutineError>;
     /** Pushes the worktree's current branch; `pushed` is false when it was already up to date. */
     readonly pushBranch: (input: {
       readonly cwd: string;
@@ -63,6 +67,18 @@ const make = Effect.gen(function* () {
         ),
       );
     return { worktreePath: result.worktree.path, branch: result.worktree.refName };
+  });
+
+  const removeWorktree: RoutineGitProvisioner["Service"]["removeWorktree"] = Effect.fn(
+    "RoutineGitProvisioner.removeWorktree",
+  )(function* (input) {
+    yield* git
+      .removeWorktree({ cwd: input.workspaceRoot, path: input.worktreePath, force: true })
+      .pipe(
+        Effect.mapError(
+          (cause) => new RoutineError({ message: "Failed to remove the branch worktree.", cause }),
+        ),
+      );
   });
 
   const pushBranch: RoutineGitProvisioner["Service"]["pushBranch"] = Effect.fn(
@@ -108,7 +124,12 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  return RoutineGitProvisioner.of({ provisionWorktree, pushBranch, createDraftPullRequest });
+  return RoutineGitProvisioner.of({
+    provisionWorktree,
+    removeWorktree,
+    pushBranch,
+    createDraftPullRequest,
+  });
 });
 
 export const layer = Layer.effect(RoutineGitProvisioner, make);

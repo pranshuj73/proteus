@@ -12,6 +12,7 @@ import {
   type RoutineExecutionStep,
   type RoutineStep,
   type ThreadId,
+  type RoutineDefinition,
   type RoutineExecution,
   RoutineError,
   RoutineExecutionId,
@@ -45,7 +46,8 @@ import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/t
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
 import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
 import * as RoutineStore from "./RoutineStore.ts";
-import { attemptLimit, nextSteps } from "./routing.ts";
+import { commitAll, mergeBranch } from "./parallel.ts";
+import { attemptLimit, nextSteps, resolveReady } from "./routing.ts";
 import {
   buildCouncilPrompt,
   buildSummaryPrompt,
@@ -57,6 +59,7 @@ import {
 import {
   RoutineStepError,
   type RoutineStepContext,
+  type RoutineStepOutcome,
   type RoutineStepRequirements,
   runStep,
 } from "./steps/StepRunner.ts";
@@ -81,9 +84,12 @@ export class Executor extends Context.Service<
     readonly approve: (
       input: RoutineApproveInput,
     ) => Effect.Effect<RoutineApproveResult, RoutineError>;
-    readonly approvedHashes: (
+    readonly approvals: (
       projectId: ProjectId,
-    ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
+    ) => Effect.Effect<
+      ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
+      RoutineError
+    >;
     readonly cancel: (id: RoutineExecutionId) => Effect.Effect<RoutineCancelResult, RoutineError>;
     readonly subscribeExecutions: (
       projectId: ProjectId,
@@ -280,6 +286,7 @@ const make = Effect.gen(function* () {
   const runExecution = Effect.fn("Executor.runExecution")(
     function* (
       initial: RoutineExecution,
+      workspaceRoot: string,
       workspaceStrategy: RoutineWorkspaceStrategy,
       modelSelection: ModelSelection | undefined,
     ) {
@@ -292,35 +299,32 @@ const make = Effect.gen(function* () {
         modelSelection,
       };
 
-      let current: RoutineStepId | undefined = definition.start ?? definition.steps[0]?.id;
       const attempts = new Map<RoutineStepId, number>();
-      while (current !== undefined) {
-        const stepId: RoutineStepId = current;
-        const step = definition.steps.find((candidate) => candidate.id === stepId);
-        if (step === undefined) {
-          const finishedAt = yield* nowIso;
-          yield* persistExecution({
-            ...initial,
-            status: "failed",
-            error: `Unknown step "${stepId}".`,
-            updatedAt: finishedAt,
-            finishedAt,
-          });
-          return;
-        }
 
+      interface StepRun {
+        readonly step: RoutineStep;
+        readonly error: string | null;
+        readonly result: RoutineStepOutcome | undefined;
+        /** Fails the execution even when the step routes errors elsewhere. */
+        readonly fatal: boolean;
+        readonly branch: RoutineWorkspaceStrategy | null;
+      }
+
+      /** Runs one step once; `isolate` gives it a sub-worktree forked from the execution branch. */
+      const runOne = Effect.fn("Executor.runOne")(function* (
+        step: RoutineStep,
+        isolate: boolean,
+      ): Effect.fn.Return<StepRun, never, RoutineStepRequirements> {
         const attempt = (attempts.get(step.id) ?? 0) + 1;
         const limit = attemptLimit(step);
         if (attempt > limit) {
-          const finishedAt = yield* nowIso;
-          yield* persistExecution({
-            ...initial,
-            status: "failed",
+          return {
+            step,
             error: `Step "${step.id}" exceeded its limit of ${limit} iterations.`,
-            updatedAt: finishedAt,
-            finishedAt,
-          });
-          return;
+            result: undefined,
+            fatal: true,
+            branch: null,
+          };
         }
         attempts.set(step.id, attempt);
 
@@ -339,21 +343,34 @@ const make = Effect.gen(function* () {
         };
         yield* persistStep(running);
 
+        let branch: RoutineWorkspaceStrategy | null = null;
         const outcome = yield* Effect.exit(
-          runStep(step, {
-            ...stepContext,
-            onThreadLaunched: (threadId) => persistStep({ ...running, threadId }),
-            ...(modelSelection === undefined
-              ? {}
-              : {
-                  answerQuestion: councilFor(
-                    initial,
-                    step,
-                    attempt,
-                    workspaceStrategy,
-                    modelSelection,
+          Effect.gen(function* () {
+            if (isolate) {
+              const provisioned = yield* git
+                .provisionWorktree({
+                  workspaceRoot,
+                  baseRef: workspaceStrategy.branch,
+                  branch: `${workspaceStrategy.branch}--${step.id}-${attempt}`,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new RoutineStepError({ message: cause.message, cause }),
                   ),
-                }),
+                );
+              branch = { type: "existing_worktree", ...provisioned };
+            }
+            const strategy = branch ?? workspaceStrategy;
+            return yield* runStep(step, {
+              ...stepContext,
+              workspaceStrategy: strategy,
+              onThreadLaunched: (threadId) => persistStep({ ...running, threadId }),
+              ...(modelSelection === undefined
+                ? {}
+                : {
+                    answerQuestion: councilFor(initial, step, attempt, strategy, modelSelection),
+                  }),
+            });
           }),
         );
         const finishedAt = yield* nowIso;
@@ -388,35 +405,96 @@ const make = Effect.gen(function* () {
             Effect.forkIn(layerScope),
           );
         }
+        return { step, error, result, fatal: false, branch };
+      });
 
-        if (error !== null || result === undefined) {
-          if (step.onError !== undefined) {
-            current = step.onError;
+      const fail = (error: string) =>
+        nowIso.pipe(
+          Effect.flatMap((finishedAt) =>
+            // The worktree is kept on failure so the user can inspect it.
+            persistExecution({
+              ...initial,
+              status: "failed",
+              error,
+              updatedAt: finishedAt,
+              finishedAt,
+            }),
+          ),
+        );
+
+      /** Folds write branches back into the execution branch in step order. */
+      const mergeBranches = Effect.fn("Executor.mergeBranches")(function* (
+        runs: ReadonlyArray<StepRun>,
+      ) {
+        for (const run of runs) {
+          if (run.branch === null || run.error !== null) continue;
+          yield* commitAll(run.branch.worktreePath, `Routine step ${run.step.id}`);
+          const merged = yield* mergeBranch(workspaceStrategy.worktreePath, run.branch.branch);
+          if (!merged.merged) {
+            const files = merged.files.length === 0 ? "unknown files" : merged.files.join(", ");
+            return `Merge conflict joining step "${run.step.id}" into ${workspaceStrategy.branch}: ${files}. Its work is kept on ${run.branch.branch}.`;
+          }
+          yield* git
+            .removeWorktree({ workspaceRoot, worktreePath: run.branch.worktreePath })
+            .pipe(Effect.ignore);
+        }
+        return null;
+      });
+
+      const done = new Set<RoutineStepId>();
+      let waiting: ReadonlyArray<RoutineStepId> = [];
+      const startId = definition.start ?? definition.steps[0]?.id;
+      let ready: ReadonlyArray<RoutineStepId> = startId === undefined ? [] : [startId];
+      while (ready.length > 0) {
+        const steps: RoutineStep[] = [];
+        for (const id of ready) {
+          const step = definition.steps.find((candidate) => candidate.id === id);
+          if (step === undefined) return yield* fail(`Unknown step "${id}".`);
+          steps.push(step);
+        }
+
+        // Read-only branches share the execution worktree; the rest fork their own.
+        const parallel = steps.length > 1;
+        const forks = (step: RoutineStep) => parallel && step.readOnly !== true;
+        if (steps.some(forks)) {
+          yield* commitAll(workspaceStrategy.worktreePath, "Routine checkpoint before fan-out");
+        }
+        const runs = yield* Effect.forEach(steps, (step) => runOne(step, forks(step)), {
+          concurrency: "unbounded",
+        });
+
+        const failure = runs.find(
+          (run) => run.error !== null && (run.fatal || run.step.onError === undefined),
+        );
+        if (failure !== undefined) {
+          return yield* fail(failure.error ?? "Step produced no result.");
+        }
+        const conflict = yield* mergeBranches(runs);
+        if (conflict !== null) return yield* fail(conflict);
+
+        const reached: RoutineStepId[] = [...waiting];
+        for (const run of runs) {
+          if (run.error !== null || run.result === undefined) {
+            if (run.step.onError !== undefined) reached.push(run.step.onError);
             continue;
           }
-          // The worktree is kept on failure so the user can inspect it.
-          yield* persistExecution({
-            ...initial,
-            status: "failed",
-            error: error ?? "Step produced no result.",
-            updatedAt: finishedAt,
-            finishedAt,
-          });
-          return;
+          done.add(run.step.id);
+          reached.push(...nextSteps(definition, run.step.id, run.result.verdict.label));
         }
-        const successors = nextSteps(definition, step.id, result.verdict.label);
-        if (successors.length > 1) {
-          // Fan-out/join is not implemented; refuse rather than drop branches.
-          yield* persistExecution({
-            ...initial,
-            status: "failed",
-            error: `Step "${step.id}" has multiple next steps; parallel fan-out is not supported yet.`,
-            updatedAt: finishedAt,
-            finishedAt,
-          });
-          return;
+        const next = resolveReady(definition, reached, done);
+        for (const id of next.ready) {
+          for (const dependency of definition.steps.find((step) => step.id === id)?.join ?? []) {
+            done.delete(dependency);
+          }
         }
-        current = successors[0];
+        ready = next.ready;
+        waiting = next.waiting;
+      }
+
+      if (waiting.length > 0) {
+        return yield* fail(
+          `Join step${waiting.length > 1 ? "s" : ""} ${waiting.map((id) => `"${id}"`).join(", ")} never ran: a step it waits for did not succeed.`,
+        );
       }
 
       const finishedAt = yield* nowIso;
@@ -487,11 +565,12 @@ const make = Effect.gen(function* () {
   });
 
   const approve: Executor["Service"]["approve"] = Effect.fn("Executor.approve")(function* (input) {
-    const { hash } = yield* loadRunnable(input.projectId, input.routineId);
+    const { hash, definition } = yield* loadRunnable(input.projectId, input.routineId);
     yield* repository.setApproval({
       projectId: input.projectId,
       routineId: input.routineId,
       hash,
+      definition,
       approvedAt: yield* nowIso,
     });
     return { routineId: input.routineId, approvedHash: hash };
@@ -502,8 +581,8 @@ const make = Effect.gen(function* () {
       input.projectId,
       input.routineId,
     );
-    const approvals = yield* repository.listApprovedHashes(input.projectId);
-    if (approvals.get(input.routineId) !== hash) {
+    const approvals = yield* repository.listApprovals(input.projectId);
+    if (approvals.get(input.routineId)?.hash !== hash) {
       return yield* new RoutineError({
         message: `Routine "${input.routineId}" must be approved before it can run.`,
         routineId: input.routineId,
@@ -566,7 +645,12 @@ const make = Effect.gen(function* () {
     yield* repository.insertExecution(execution);
     yield* notify;
     const fiber = yield* Effect.forkIn(
-      runExecution(execution, { type: "existing_worktree", ...worktree }, modelSelection).pipe(
+      runExecution(
+        execution,
+        workspaceRoot,
+        { type: "existing_worktree", ...worktree },
+        modelSelection,
+      ).pipe(
         Effect.provide(stepEnv),
         Effect.ensuring(Effect.sync(() => void runningFibers.delete(execution.id))),
       ),
@@ -720,7 +804,7 @@ const make = Effect.gen(function* () {
   return Executor.of({
     start,
     approve,
-    approvedHashes: repository.listApprovedHashes,
+    approvals: repository.listApprovals,
     cancel,
     subscribeExecutions,
     subscribeExecution,

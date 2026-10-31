@@ -46,6 +46,11 @@ interface Fakes {
   readonly gate?: Deferred.Deferred<void>;
   readonly stopped?: Array<string>;
   readonly pushed?: boolean;
+  /** Commands (argv joined) that exit 1. */
+  readonly failing?: ReadonlyArray<string>;
+  readonly mergeConflict?: boolean;
+  /** Every git invocation, as `cwd: args`. */
+  readonly gitCalls?: Array<string>;
   readonly launched?: Deferred.Deferred<void>;
   readonly seed?: Effect.Effect<void, RoutineError, ExecutionRepository.ExecutionRepository>;
 }
@@ -82,7 +87,12 @@ const withExecutor = <A, E>(
           }),
           Layer.mock(RoutineGitProvisioner)({
             provisionWorktree: ({ branch }) =>
-              Effect.succeed({ worktreePath: "/worktrees/routine", branch }),
+              Effect.succeed({
+                worktreePath: branch.includes("--") ? `/worktrees/${branch}` : "/worktrees/routine",
+                branch,
+              }),
+            removeWorktree: ({ worktreePath }) =>
+              Effect.sync(() => void fakes.gitCalls?.push(`remove ${worktreePath}`)),
             createDraftPullRequest: ({ title }) =>
               Effect.sync(() => void fakes.seen?.push(`pr:${title}`)).pipe(
                 Effect.as({ url: "https://example.test/pull/1" }),
@@ -93,14 +103,25 @@ const withExecutor = <A, E>(
               ),
           }),
           Layer.mock(RoutineProcessRunner)({
-            run: ({ cwd }) =>
-              Effect.sync(() => void fakes.seen?.push(cwd)).pipe(
-                Effect.as({
-                  code: fakes.exitCode ?? 0,
+            run: ({ cwd, argv }) =>
+              Effect.sync(() => {
+                if (argv[0] === "git") {
+                  const args = argv.slice(5);
+                  fakes.gitCalls?.push(`${cwd}: ${args.join(" ")}`);
+                  return {
+                    code: args[0] === "merge" && fakes.mergeConflict === true ? 1 : 0,
+                    output:
+                      args[0] === "status" ? "M file" : args[0] === "diff" ? "src/a.ts\n" : "",
+                    timedOut: false,
+                  };
+                }
+                fakes.seen?.push(`${argv.join(" ")} @ ${cwd}`);
+                return {
+                  code: fakes.failing?.includes(argv.join(" ")) ? 1 : (fakes.exitCode ?? 0),
                   output: "command output",
                   timedOut: false,
-                }),
-              ),
+                };
+              }),
           }),
           Layer.mock(RoutineThreadRunner)({
             stopThread: ({ threadId }) => Effect.sync(() => void fakes.stopped?.push(threadId)),
@@ -211,7 +232,10 @@ it.effect("a linear command routine finishes awaiting review with pass verdicts"
 
         const settled = yield* awaitSettled(executor, execution.id);
         assert.equal(settled.execution.status, "awaiting_review");
-        assert.deepEqual(commandSeen, ["/worktrees/routine", "/worktrees/routine"]);
+        assert.deepEqual(commandSeen, [
+          "make @ /worktrees/routine",
+          "make test @ /worktrees/routine",
+        ]);
         assert.deepEqual(
           settled.steps.map((step) => [step.stepId, step.status, step.verdict?.label]),
           [
@@ -478,29 +502,94 @@ it.effect("a verdict loop retries with increasing attempts until maxIterations f
   ),
 );
 
-it.effect("a step with several next steps fails instead of dropping branches", () =>
-  withExecutor(
-    {
-      routine: {
-        version: 1,
-        name: "demo",
-        steps: [
-          { id: "build", kind: "command", argv: ["make"], next: ["a", "b"] },
-          { id: "a", kind: "command", argv: ["make"] },
-          { id: "b", kind: "command", argv: ["make"] },
-        ],
-      },
-    },
+const fanOut = (
+  readOnly: boolean,
+  extra: Record<string, unknown> = {},
+  branchB: Record<string, unknown> = {},
+) => ({
+  version: 1,
+  name: "demo",
+  steps: [
+    { id: "build", kind: "command", argv: ["make"], next: ["a", "b"], onError: "recover" },
+    { id: "a", kind: "command", argv: ["a"], readOnly, next: ["ship"], ...extra },
+    { id: "b", kind: "command", argv: ["b"], readOnly, next: ["ship"], ...branchB },
+    { id: "ship", kind: "command", argv: ["ship"], join: ["a", "b"] },
+    { id: "recover", kind: "command", argv: ["recover"] },
+  ],
+});
+
+it.effect("read-only branches share the worktree and the join runs after both", () => {
+  const seen: Array<string> = [];
+  const gitCalls: Array<string> = [];
+  return withExecutor({ seen, gitCalls, routine: fanOut(true) }, (executor) =>
+    Effect.gen(function* () {
+      const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+      const settled = yield* awaitSettled(executor, execution.id);
+      assert.equal(settled.execution.status, "awaiting_review");
+      assert.deepEqual(gitCalls, []);
+      assert.equal(seen.at(-1), "ship @ /worktrees/routine");
+      assert.sameMembers(seen.slice(1, 3), ["a @ /worktrees/routine", "b @ /worktrees/routine"]);
+      assert.deepEqual(settled.steps.map((step) => step.stepId).sort(), [
+        "a",
+        "b",
+        "build",
+        "ship",
+      ]);
+    }),
+  );
+});
+
+it.effect("write branches get their own worktrees and merge back in step order", () => {
+  const seen: Array<string> = [];
+  const gitCalls: Array<string> = [];
+  return withExecutor({ seen, gitCalls, routine: fanOut(false) }, (executor) =>
+    Effect.gen(function* () {
+      const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+      const settled = yield* awaitSettled(executor, execution.id);
+      assert.equal(settled.execution.status, "awaiting_review");
+      const prefix = `/worktrees/${execution.branch}`;
+      assert.sameMembers(seen.slice(1, 3), [`a @ ${prefix}--a-1`, `b @ ${prefix}--b-1`]);
+      assert.equal(seen.at(-1), "ship @ /worktrees/routine");
+      const merges = gitCalls.filter((call) => call.includes(": merge "));
+      assert.deepEqual(merges, [
+        `/worktrees/routine: merge --no-ff --no-edit ${execution.branch}--a-1`,
+        `/worktrees/routine: merge --no-ff --no-edit ${execution.branch}--b-1`,
+      ]);
+      assert.equal(gitCalls.filter((call) => call.startsWith("remove ")).length, 2);
+    }),
+  );
+});
+
+it.effect("a merge conflict fails the execution naming the branch and files", () => {
+  const gitCalls: Array<string> = [];
+  return withExecutor({ gitCalls, mergeConflict: true, routine: fanOut(false) }, (executor) =>
+    Effect.gen(function* () {
+      const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+      const settled = yield* awaitSettled(executor, execution.id);
+      assert.equal(settled.execution.status, "failed");
+      assert.include(settled.execution.error ?? "", 'Merge conflict joining step "a"');
+      assert.include(settled.execution.error ?? "", "src/a.ts");
+      assert.isTrue(gitCalls.some((call) => call.endsWith(": merge --abort")));
+      assert.isFalse(settled.steps.some((step) => step.stepId === "ship"));
+    }),
+  );
+});
+
+it.effect("a join does not run when a branch failed, deferring to its onError route", () => {
+  const seen: Array<string> = [];
+  return withExecutor(
+    { seen, failing: ["a"], routine: fanOut(true, { onError: "recover" }) },
     (executor) =>
       Effect.gen(function* () {
         const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
         const settled = yield* awaitSettled(executor, execution.id);
         assert.equal(settled.execution.status, "failed");
-        assert.include(settled.execution.error ?? "", "multiple next steps");
-        assert.equal(settled.steps.length, 1);
+        assert.include(settled.execution.error ?? "", 'Join step "ship" never ran');
+        assert.isTrue(seen.some((call) => call.startsWith("recover ")));
+        assert.isFalse(seen.some((call) => call.startsWith("ship ")));
       }),
-  ),
-);
+  );
+});
 
 it.effect("a routine must be approved at its current hash before it can run", () =>
   withExecutor(
@@ -518,8 +607,9 @@ it.effect("a routine must be approved at its current hash before it can run", ()
         assert.include(refused.message, "must be approved");
 
         const approval = yield* raw.approve({ projectId, routineId });
-        const approvals = yield* raw.approvedHashes(projectId);
-        assert.equal(approvals.get(routineId), approval.approvedHash);
+        const approvals = yield* raw.approvals(projectId);
+        assert.equal(approvals.get(routineId)?.hash, approval.approvedHash);
+        assert.equal(approvals.get(routineId)?.definition?.name, "demo");
 
         const { execution } = yield* raw.start(input);
         assert.equal(execution.routineHash, approval.approvedHash);

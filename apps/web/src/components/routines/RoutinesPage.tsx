@@ -1,6 +1,7 @@
 import type {
   EnvironmentId,
   ProjectId,
+  RoutineDefinition,
   RoutineExecutionId,
   RoutineSummary,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import { SidebarInset } from "../ui/sidebar";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { RoutineGraph } from "./RoutineGraph";
+import { diffRoutineDefinitions, isEmptyRoutineDiff } from "./routineGraphDiff";
 import { NewRoutineButton } from "./NewRoutineButton";
 import { RoutineExecutionsList } from "./RoutineExecutionsList";
 import { RoutineRunDialog } from "./RoutineRunDialog";
@@ -45,6 +47,57 @@ function RoutineIssueList({ issues }: { readonly issues: RoutineSummary["issues"
         </li>
       ))}
     </ul>
+  );
+}
+
+function RoutineDiffSummary({
+  approved,
+  current,
+}: {
+  readonly approved: RoutineDefinition;
+  readonly current: RoutineDefinition;
+}) {
+  const diff = diffRoutineDefinitions(approved, current);
+  if (isEmptyRoutineDiff(diff)) return null;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border p-2 text-xs">
+      <span className="font-medium text-foreground">Changes since the approved version</span>
+      <ul className="flex flex-col gap-1">
+        {diff.added.map((id) => (
+          <li key={`added:${id}`} className="flex items-center gap-2">
+            <Badge variant="success" size="sm">
+              added
+            </Badge>
+            <span className="font-mono">{id}</span>
+          </li>
+        ))}
+        {diff.removed.map((id) => (
+          <li key={`removed:${id}`} className="flex items-center gap-2">
+            <Badge variant="error" size="sm">
+              removed
+            </Badge>
+            <span className="font-mono">{id}</span>
+          </li>
+        ))}
+        {diff.changed.map((entry) => (
+          <li key={`changed:${entry.id}`} className="flex items-center gap-2">
+            <Badge variant="warning" size="sm">
+              changed
+            </Badge>
+            <span className="font-mono">{entry.id}</span>
+            <span className="text-muted-foreground">{entry.fields.join(", ")}</span>
+          </li>
+        ))}
+        {diff.routineFields.map((field) => (
+          <li key={`routine:${field}`} className="flex items-center gap-2">
+            <Badge variant="warning" size="sm">
+              changed
+            </Badge>
+            <span className="text-muted-foreground">routine {field}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -134,6 +187,12 @@ function RoutineCard({
         </div>
       </div>
       {valid ? null : <RoutineIssueList issues={summary.issues} />}
+      {valid &&
+      !summary.approved &&
+      summary.definition !== null &&
+      summary.approvedDefinition != null ? (
+        <RoutineDiffSummary approved={summary.approvedDefinition} current={summary.definition} />
+      ) : null}
       {summary.definition === null ? null : <RoutineGraph definition={summary.definition} />}
       <RoutineExecutionsList
         environmentId={environmentId}

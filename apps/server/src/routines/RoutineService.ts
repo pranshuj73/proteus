@@ -84,11 +84,12 @@ const make = Effect.gen(function* () {
           (cause) => new RoutineError({ message: "Failed to read routines.", cause }),
         ),
       );
-      const approvals = yield* executor.approvedHashes(input.projectId);
+      const approvals = yield* executor.approvals(input.projectId);
       return {
         routines: routines.map((routine) => ({
           ...routine,
-          approved: routine.hash !== null && approvals.get(routine.id) === routine.hash,
+          approved: routine.hash !== null && approvals.get(routine.id)?.hash === routine.hash,
+          approvedDefinition: approvals.get(routine.id)?.definition ?? null,
         })),
       };
     },

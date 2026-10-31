@@ -46,6 +46,8 @@ const routineStepBaseFields = {
   onError: Schema.optional(RoutineStepId),
   /** This step waits for all of these steps to finish successfully. */
   join: Schema.optional(Schema.Array(RoutineStepId)),
+  /** Declares the step never edits files, so parallel branches may share the execution worktree. */
+  readOnly: Schema.optional(Schema.Boolean),
   maxIterations: Schema.optional(PositiveInt),
   timeoutMs: Schema.optional(PositiveInt),
   retries: Schema.optional(NonNegativeInt),
@@ -148,6 +150,8 @@ export const RoutineSummary = Schema.Struct({
   issues: Schema.Array(RoutineValidationIssue),
   /** True when the current hash has been approved to run. */
   approved: Schema.Boolean,
+  /** The definition last approved, kept so an edit can be diffed against it; null before any approval. */
+  approvedDefinition: Schema.optional(Schema.NullOr(RoutineDefinition)),
 });
 export type RoutineSummary = typeof RoutineSummary.Type;
 
@@ -363,9 +367,12 @@ Transitions (a step with neither is terminal):
   next: array of step ids to run unconditionally after this step. Mutually exclusive with on.
   on: map from a verdict label to the next step id, or to "$end" to finish the execution. Cover every verdict label the step can produce.
   inputs: ids of earlier steps whose output is passed to this step as evidence.
+  join: ids of steps this step waits for. A next with several ids fans out in parallel; the step that lists them in join runs once all succeeded.
+  readOnly: true marks a step that never edits files. Parallel steps without it each get their own worktree, merged back afterwards (a merge conflict fails the execution).
 
 Workflow:
   1. Draft the routine JSON from the user's use case. Prefer a simple linear next chain unless they need branching.
   2. Call t3_routine_validate with { projectId, definition }. Fix every reported issue and re-validate. Make at most 3 repair passes.
   3. Once validation returns no issues, call t3_routine_save with { projectId, routineId, definition } (routineId is the kebab-case file name). It writes the file and returns its path.
-  4. Tell the user the routine is saved and where, or report the remaining issues if you could not resolve them.`;
+  4. To edit an existing routine, read its file, change it, validate, and save with the same routineId. The edit needs re-approval, and the approval screen shows what changed.
+  5. Tell the user the routine is saved and where, or report the remaining issues if you could not resolve them.`;
