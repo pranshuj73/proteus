@@ -372,6 +372,7 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
+import { RoutineError, RoutineListInput, RoutineListResult } from "./routine.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -542,6 +543,7 @@ export const WS_METHODS = {
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+  routinesList: "routines.list",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1931,6 +1933,12 @@ const WsScheduledTasksGetWebhookDeliveryRpc = Rpc.make(
   },
 );
 
+const WsRoutinesListRpc = Rpc.make(WS_METHODS.routinesList, {
+  payload: RoutineListInput,
+  success: RoutineListResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -2015,6 +2023,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
+  WsRoutinesListRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

@@ -62,3 +62,15 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Attachment inventory | The ordered image records shown as thumbnails above the prose, including images with no inline references.                          |
 
 See [composer context references](./composer-context-references.md) for the contract and lifecycle.
+
+## Routines
+
+| Term             | Meaning                                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Routine          | An ordered automation defined in `.proteus/routines/<id>.json` within a project. It runs unattended once approved. |
+| Execution        | One run-through of a routine, in its own worktree and branch. Distinct from a run, which is a V2 turn.             |
+| Step             | One unit of a routine: a skill, agent, command, or action step. Skill and agent steps get a thread each.           |
+| Verdict          | A step's typed result: one label from the step's declared set plus a one-line reason.                              |
+| Gate             | A labelled transition from a step, chosen by its verdict. A gate is not a step.                                    |
+| Council          | The agent that answers step questions on the user's behalf during an execution. It never grants permissions.       |
+| Council decision | One recorded council answer with its rationale and confidence, grouped by step.                                    |
