@@ -178,9 +178,8 @@ const make = Effect.gen(function* () {
     return Stream.merge(
       Stream.make(undefined),
       threadManagement.streamDomainEvents.pipe(
-        Stream.filter(
-          (event) => event.threadId === threadId && event.type === "runtime-request.updated",
-        ),
+        // The question's turn item can land after the request event, so any event rescans.
+        Stream.filter((event) => event.threadId === threadId),
         Stream.map(() => undefined),
         Stream.mapError(
           (cause) =>
