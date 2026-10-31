@@ -11,6 +11,9 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useAtomValue } from "@effect/atom-react";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
+import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useEnvironmentQuery } from "../../state/query";
+import { serverEnvironment } from "../../state/server";
 import { shortcutLabelForCommand } from "../../keybindings";
 import {
   navigateHistory,
@@ -203,9 +206,11 @@ function SidebarUtilityItem({
   icon,
   label,
   onClick,
+  count = 0,
 }: {
   icon: ReactNode;
   label: string;
+  count?: number;
   onClick: () => void;
 }) {
   return (
@@ -213,8 +218,16 @@ function SidebarUtilityItem({
       <Tooltip>
         <TooltipTrigger
           render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
+            <SidebarMenuButton
+              aria-label={count > 0 ? `${label} (${count} need attention)` : label}
+              className="relative"
+              onClick={onClick}
+              size="icon"
+            >
               {icon}
+              {count > 0 ? (
+                <span className="absolute right-1 top-1 size-1.5 rounded-full bg-warning" />
+              ) : null}
             </SidebarMenuButton>
           }
         />
@@ -244,6 +257,16 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       search: readPullRequestListPreferences(),
     });
   };
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const routineAttention =
+    useEnvironmentQuery(
+      primaryEnvironmentId === null
+        ? null
+        : serverEnvironment.routineAttention({
+            environmentId: primaryEnvironmentId,
+            input: {},
+          }),
+    ).data?.count ?? 0;
   const handleRoutinesClick = () => {
     closeMobileSidebar();
     void navigate({ to: "/routines" });
@@ -291,6 +314,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           <SidebarUtilityItem
             icon={<WorkflowIcon />}
             label="Routines"
+            count={routineAttention}
             onClick={handleRoutinesClick}
           />
           <SidebarUtilityItem

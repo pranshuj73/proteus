@@ -377,6 +377,7 @@ import {
   RoutineApproveResult,
   RoutineCancelInput,
   RoutineCancelResult,
+  RoutineAttentionResult,
   RoutineCompleteInput,
   RoutineControlInput,
   RoutineRemoveExecutableInput,
@@ -575,6 +576,7 @@ export const WS_METHODS = {
   routinesRemoveExecutable: "routines.removeExecutable",
   routinesApprove: "routines.approve",
   routinesSubscribeExecutions: "routines.subscribeExecutions",
+  routinesSubscribeAttention: "routines.subscribeAttention",
   routinesSubscribeExecution: "routines.subscribeExecution",
   routinesCouncilRecords: "routines.councilRecords",
   routinesRegenerateSummary: "routines.regenerateSummary",
@@ -2024,6 +2026,13 @@ const WsRoutinesRegenerateSummaryRpc = Rpc.make(WS_METHODS.routinesRegenerateSum
   error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
 });
 
+const WsRoutinesSubscribeAttentionRpc = Rpc.make(WS_METHODS.routinesSubscribeAttention, {
+  payload: Schema.Struct({}),
+  success: RoutineAttentionResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsRoutinesSubscribeExecutionsRpc = Rpc.make(WS_METHODS.routinesSubscribeExecutions, {
   payload: RoutineExecutionsInput,
   success: RoutineExecutionsResult,
@@ -2126,6 +2135,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoutinesStartRpc,
   WsRoutinesCancelRpc,
   WsRoutinesCompleteRpc,
+  WsRoutinesSubscribeAttentionRpc,
   WsRoutinesControlRpc,
   WsRoutinesRevokeRpc,
   WsRoutinesRemoveExecutableRpc,

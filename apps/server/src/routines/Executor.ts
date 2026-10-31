@@ -21,6 +21,7 @@ import {
   type RoutineApproveInput,
   type RoutineApproveResult,
   type RoutineCancelResult,
+  type RoutineAttentionResult,
   type RoutineCompleteInput,
   type RoutineCompleteResult,
   type RoutineControlInput,
@@ -118,6 +119,7 @@ export class Executor extends Context.Service<
     readonly complete: (
       input: RoutineCompleteInput,
     ) => Effect.Effect<RoutineCompleteResult, RoutineError>;
+    readonly subscribeAttention: Stream.Stream<RoutineAttentionResult, RoutineError>;
     readonly subscribeExecutions: (
       projectId: ProjectId,
     ) => Stream.Stream<RoutineExecutionsResult, RoutineError>;
@@ -520,11 +522,19 @@ const make = Effect.gen(function* () {
         const approvals = yield* repository.listApprovals(initial.projectId).pipe(Effect.orDie);
         const approved = approvals.get(initial.routineId);
         const revoked = approved?.hash !== initial.routineHash;
-        if (control.pauseRequested || revoked) {
+        const allowlist = yield* repository.listAllowlist(initial.projectId).pipe(Effect.orDie);
+        const disallowed = routineExecutables(definition).filter(
+          (name) => !allowlist.includes(name),
+        );
+        if (control.pauseRequested || revoked || disallowed.length > 0) {
           control.pauseRequested = false;
           const decision = yield* park(
             "paused",
-            revoked ? "This routine's approval was revoked or changed." : null,
+            revoked
+              ? "This routine's approval was revoked or changed."
+              : disallowed.length > 0
+                ? `No longer allowlisted: ${disallowed.join(", ")}.`
+                : null,
           );
           if (decision.action === "restart") {
             invalidateFrom(decision.stepId);
@@ -998,6 +1008,10 @@ const make = Effect.gen(function* () {
       repository.listExecutions(projectId).pipe(Effect.map((executions) => ({ executions }))),
     );
 
+  const subscribeAttention: Executor["Service"]["subscribeAttention"] = subscribeTo(
+    repository.countAttention().pipe(Effect.map((count) => ({ count }))),
+  ).pipe(Stream.changesWith((left, right) => left.count === right.count));
+
   const subscribeExecution: Executor["Service"]["subscribeExecution"] = (id) =>
     subscribeTo(readExecution(id));
 
@@ -1036,6 +1050,7 @@ const make = Effect.gen(function* () {
     revoke: repository.deleteApproval,
     removeExecutable: repository.removeAllowlist,
     allowlist: repository.listAllowlist,
+    subscribeAttention,
     subscribeExecutions,
     subscribeExecution,
     councilRecords,

@@ -2151,6 +2151,7 @@ export const layerWsRpc = (
         [WS_METHODS.routinesRemoveExecutable]: (input) => routines.removeExecutable(input),
         [WS_METHODS.routinesApprove]: (input) => routines.approve(input),
         [WS_METHODS.routinesSubscribeExecutions]: (input) => routines.subscribeExecutions(input),
+        [WS_METHODS.routinesSubscribeAttention]: () => routines.subscribeAttention,
         [WS_METHODS.routinesSubscribeExecution]: (input) => routines.subscribeExecution(input),
         [WS_METHODS.routinesCouncilRecords]: (input) => routines.councilRecords(input),
         [WS_METHODS.routinesRegenerateSummary]: (input) => routines.regenerateSummary(input),

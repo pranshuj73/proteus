@@ -1292,6 +1292,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:list",
       tag: WS_METHODS.routinesList,
     }),
+    routineAttention: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:routines:attention",
+      tag: WS_METHODS.routinesSubscribeAttention,
+    }),
     routineExecutions: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:routines:executions",
       tag: WS_METHODS.routinesSubscribeExecutions,

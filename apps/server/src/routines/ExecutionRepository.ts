@@ -94,6 +94,7 @@ export class ExecutionRepository extends Context.Service<
       ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
       RoutineError
     >;
+    readonly countAttention: () => Effect.Effect<number, RoutineError>;
     readonly setApproval: (input: {
       readonly projectId: ProjectId;
       readonly routineId: string;
@@ -264,6 +265,16 @@ const make = Effect.gen(function* () {
     `.pipe(
       Effect.asVoid,
       Effect.mapError((cause) => repositoryError("Could not write a routine step.", cause)),
+    );
+
+  const countAttention: ExecutionRepository["Service"]["countAttention"] = () =>
+    sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM routine_executions
+      WHERE status IN ('paused', 'needs_attention', 'awaiting_review')
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.map((rows) => rows[0]?.count ?? 0),
+      Effect.mapError((cause) => repositoryError("Could not count routine executions.", cause)),
     );
 
   const listRunning: ExecutionRepository["Service"]["listRunning"] = () =>
@@ -449,6 +460,7 @@ const make = Effect.gen(function* () {
     upsertSummary,
     listSummaries,
     listRunning,
+    countAttention,
     listApprovals,
     setApproval,
     deleteApproval,

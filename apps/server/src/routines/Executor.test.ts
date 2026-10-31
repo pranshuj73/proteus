@@ -393,6 +393,72 @@ it.effect(
   },
 );
 
+it.effect(
+  "pause holds after the current step and restart reruns it; removing an executable pauses",
+  () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const launched = yield* Deferred.make<void>();
+      return yield* withExecutor(
+        {
+          gate,
+          launched,
+          routine: {
+            version: 1,
+            name: "demo",
+            steps: [
+              {
+                id: "review",
+                kind: "agent",
+                purpose: "Review",
+                verdict: { labels: ["ok"] },
+                next: ["build"],
+              },
+              { id: "build", kind: "command", argv: ["make"] },
+            ],
+          },
+        },
+        (executor, raw) =>
+          Effect.gen(function* () {
+            const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+            const executionId = execution.id;
+            yield* Deferred.await(launched);
+            yield* raw.control({ executionId, action: "pause" });
+            yield* Deferred.succeed(gate, undefined);
+            const paused = yield* awaitSettled(executor, executionId);
+            assert.equal(paused.execution.status, "paused");
+            assert.deepEqual(
+              paused.steps.map((step) => step.stepId),
+              ["review"],
+            );
+
+            yield* raw.control({
+              executionId,
+              action: "restart",
+              stepId: RoutineStepId.make("review"),
+            });
+            const finished = yield* executor.subscribeExecution(executionId).pipe(
+              Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+              Stream.runHead,
+              Effect.map(Option.getOrThrow),
+            );
+            assert.deepEqual(
+              finished.steps.map((step) => `${step.stepId}:${step.attempt}`),
+              ["build:1", "review:1", "review:2"],
+            );
+
+            yield* raw.removeExecutable({ projectId, executable: "make" });
+            const second = yield* raw
+              .approve({ projectId, routineId, allowExecutables: ["make"] })
+              .pipe(Effect.andThen(raw.start({ projectId, routineId, brief: "" })));
+            yield* raw.removeExecutable({ projectId, executable: "make" });
+            const held = yield* awaitSettled(executor, second.execution.id);
+            assert.include(held.execution.error ?? "", "make");
+          }),
+      );
+    }),
+);
+
 it.effect("retry, skip and pause steer a parked execution", () => {
   const failing = ["make"];
   return withExecutor(

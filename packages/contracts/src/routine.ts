@@ -348,6 +348,12 @@ export const RoutineControlInput = Schema.Union([
 ]);
 export type RoutineControlInput = typeof RoutineControlInput.Type;
 
+export const RoutineAttentionResult = Schema.Struct({
+  /** Executions across all projects that are waiting on a person. */
+  count: NonNegativeInt,
+});
+export type RoutineAttentionResult = typeof RoutineAttentionResult.Type;
+
 export const RoutineCompleteInput = Schema.Struct({
   executionId: RoutineExecutionId,
   /** Deletes the worktree even with uncommitted changes or unpushed commits. */
