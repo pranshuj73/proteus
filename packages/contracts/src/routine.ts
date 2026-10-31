@@ -446,9 +446,10 @@ Each step has an id, optional title, a kind, and transitions:
   kind "action": a built-in action. Fields: action ("git.push" or "pr.create"), optional draft. Implicit verdict labels: created | failed.
 
 Transitions (a step with neither is terminal):
-  next: array of step ids to run unconditionally after this step. Mutually exclusive with on.
+  next: array of step ids to run unconditionally after this step. Never set next and on on the same step.
   on: map from a verdict label to the next step id, or to "$end" to finish the execution. Cover every verdict label the step can produce.
   inputs: ids of earlier steps whose output is passed to this step as evidence.
+  maxIterations: required on a step that any transition loops back to, whether that transition is in next or on.
   join: ids of steps this step waits for. A next with several ids fans out in parallel; the step that lists them in join runs once all succeeded.
   readOnly: true marks a step that never edits files. Parallel steps without it each get their own worktree, merged back afterwards (a merge conflict fails the execution).
 
