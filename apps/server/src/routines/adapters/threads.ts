@@ -37,6 +37,8 @@ interface RoutineAgentStepInput {
   readonly modelSelection?: ModelSelection | undefined;
   readonly title: string;
   readonly timeoutMs?: number | undefined;
+  /** Runs once the thread exists, so a cancel can stop it before the step finishes. */
+  readonly onLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
 }
 
 interface RoutineAgentStepResult {
@@ -54,6 +56,10 @@ export class RoutineThreadRunner extends Context.Service<
     readonly runAgentStep: (
       input: RoutineAgentStepInput,
     ) => Effect.Effect<RoutineAgentStepResult, RoutineStepError>;
+    readonly stopThread: (input: {
+      readonly projectId: ProjectId;
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<void, RoutineStepError>;
     readonly resolveDefaultModel: (
       projectId: ProjectId,
     ) => Effect.Effect<ModelSelection, RoutineError>;
@@ -113,6 +119,8 @@ const make = Effect.gen(function* () {
       ),
     );
 
+    if (input.onLaunched !== undefined) yield* input.onLaunched(threadId);
+
     const run =
       launch.projection.runs.find((candidate) => candidate.userMessageId === messageId) ??
       launch.projection.runs.at(-1);
@@ -154,6 +162,35 @@ const make = Effect.gen(function* () {
     return { threadId, verdictText: lastAssistant?.text ?? "" };
   });
 
+  const stopThread: RoutineThreadRunner["Service"]["stopThread"] = Effect.fn(
+    "RoutineThreadRunner.stopThread",
+  )(function* (input) {
+    const unique = yield* crypto
+      .randomUUIDv4()
+      .pipe(
+        Effect.mapError(
+          (cause) => new RoutineStepError({ message: "Failed to create a command id.", cause }),
+        ),
+      );
+    yield* threadManagement
+      .interruptThread({
+        projectId: input.projectId,
+        threadId: input.threadId,
+        commandId: CommandId.make(`routine-stop:${unique}`),
+        reason: "Routine execution cancelled",
+      })
+      .pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          (cause) =>
+            new RoutineStepError({
+              message: `Failed to stop agent thread: ${cause.message}`,
+              cause,
+            }),
+        ),
+      );
+  });
+
   const resolveDefaultModel: RoutineThreadRunner["Service"]["resolveDefaultModel"] = Effect.fn(
     "RoutineThreadRunner.resolveDefaultModel",
   )(
@@ -187,7 +224,7 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  return RoutineThreadRunner.of({ runAgentStep, resolveDefaultModel });
+  return RoutineThreadRunner.of({ runAgentStep, stopThread, resolveDefaultModel });
 });
 
 export const layer = Layer.effect(RoutineThreadRunner, make);

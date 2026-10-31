@@ -35,6 +35,9 @@ interface Fakes {
   readonly verdictText?: string;
   readonly seen?: Array<string>;
   readonly gate?: Deferred.Deferred<void>;
+  readonly stopped?: Array<string>;
+  readonly pushed?: boolean;
+  readonly launched?: Deferred.Deferred<void>;
 }
 
 const withExecutor = <A, E>(
@@ -62,6 +65,10 @@ const withExecutor = <A, E>(
           Layer.mock(RoutineGitProvisioner)({
             provisionWorktree: ({ branch }) =>
               Effect.succeed({ worktreePath: "/worktrees/routine", branch }),
+            pushBranch: ({ cwd }) =>
+              Effect.sync(() => void fakes.seen?.push(`push:${cwd}`)).pipe(
+                Effect.as({ pushed: fakes.pushed ?? true, branch: "routine/pushed" }),
+              ),
           }),
           Layer.mock(RoutineProcessRunner)({
             run: ({ cwd }) =>
@@ -74,23 +81,23 @@ const withExecutor = <A, E>(
               ),
           }),
           Layer.mock(RoutineThreadRunner)({
-            runAgentStep: ({ prompt, modelSelection, workspaceStrategy }) =>
-              (fakes.gate === undefined ? Effect.void : Deferred.await(fakes.gate)).pipe(
-                Effect.andThen(
-                  Effect.sync(
-                    () =>
-                      void fakes.seen?.push(
-                        prompt,
-                        modelSelection?.model ?? "",
-                        workspaceStrategy.worktreePath,
-                      ),
-                  ),
-                ),
-                Effect.as({
+            stopThread: ({ threadId }) => Effect.sync(() => void fakes.stopped?.push(threadId)),
+            runAgentStep: ({ prompt, modelSelection, workspaceStrategy, onLaunched }) =>
+              Effect.gen(function* () {
+                if (onLaunched !== undefined) yield* onLaunched(ThreadId.make("routine-thread"));
+                if (fakes.launched !== undefined)
+                  yield* Deferred.succeed(fakes.launched, undefined);
+                if (fakes.gate !== undefined) yield* Deferred.await(fakes.gate);
+                fakes.seen?.push(
+                  prompt,
+                  modelSelection?.model ?? "",
+                  workspaceStrategy.worktreePath,
+                );
+                return {
                   threadId: ThreadId.make("routine-thread"),
                   verdictText: fakes.verdictText ?? "",
-                }),
-              ),
+                };
+              }),
             resolveDefaultModel: () =>
               Effect.succeed({
                 instanceId: ProviderInstanceId.make("codex"),
@@ -268,6 +275,87 @@ it.effect("cancelling a running execution ends it cancelled", () =>
         }),
     );
   }),
+);
+
+it.effect("cancelling stops the running step's agent thread", () =>
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const launched = yield* Deferred.make<void>();
+    const stopped: Array<string> = [];
+    return yield* withExecutor(
+      {
+        gate,
+        launched,
+        stopped,
+        routine: {
+          version: 1,
+          name: "demo",
+          steps: [{ id: "review", kind: "agent", purpose: "Review", verdict: { labels: ["ok"] } }],
+        },
+      },
+      (executor) =>
+        Effect.gen(function* () {
+          const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+          yield* Deferred.await(launched);
+          yield* executor.cancel(execution.id);
+          assert.deepEqual(stopped, ["routine-thread"]);
+        }),
+    );
+  }),
+);
+
+it.effect("git.push pushes the execution worktree; pr.create is unsupported", () =>
+  Effect.gen(function* () {
+    const seen: Array<string> = [];
+    return yield* withExecutor(
+      {
+        seen,
+        routine: {
+          version: 1,
+          name: "demo",
+          steps: [
+            { id: "push", kind: "action", action: "git.push", next: ["pr"] },
+            { id: "pr", kind: "action", action: "pr.create", draft: true },
+          ],
+        },
+      },
+      (executor) =>
+        Effect.gen(function* () {
+          const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+          const settled = yield* awaitSettled(executor, execution.id);
+          assert.deepEqual(seen, ["push:/worktrees/routine"]);
+          assert.equal(
+            settled.steps.find((step) => step.stepId === "push")?.verdict?.label,
+            "pass",
+          );
+          assert.equal(settled.execution.status, "failed");
+          assert.include(
+            settled.steps.find((step) => step.stepId === "pr")?.error ?? "",
+            "not supported",
+          );
+        }),
+    );
+  }),
+);
+
+it.effect("git.push with nothing to push fails the step", () =>
+  withExecutor(
+    {
+      pushed: false,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "push", kind: "action", action: "git.push" }],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "failed");
+        assert.include(settled.steps[0]?.error ?? "", "Nothing to push");
+      }),
+  ),
 );
 
 it.effect("starting an invalid routine fails with RoutineError", () =>

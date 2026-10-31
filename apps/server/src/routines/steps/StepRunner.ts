@@ -9,9 +9,11 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import type { RoutineGitProvisioner } from "../adapters/git.ts";
 import type { RoutineProcessRunner } from "../adapters/process.ts";
 import type { RoutineThreadRunner, RoutineWorkspaceStrategy } from "../adapters/threads.ts";
 import { runAgentOrSkillStep } from "./agent.ts";
+import { runActionStep } from "./action.ts";
 import { runCommandStep } from "./command.ts";
 
 /** A single step failed to execute; the executor turns this into a failed execution. */
@@ -26,6 +28,7 @@ export interface RoutineStepContext {
   readonly brief: string;
   readonly workspaceStrategy: RoutineWorkspaceStrategy;
   readonly modelSelection?: ModelSelection | undefined;
+  readonly onThreadLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
 }
 
 export interface RoutineStepOutcome {
@@ -34,7 +37,11 @@ export interface RoutineStepOutcome {
   readonly threadId?: ThreadId | undefined;
 }
 
-export type RoutineStepRequirements = RoutineProcessRunner | RoutineThreadRunner | Path.Path;
+export type RoutineStepRequirements =
+  | RoutineProcessRunner
+  | RoutineThreadRunner
+  | RoutineGitProvisioner
+  | Path.Path;
 
 /** Kind-keyed registry: `command` runs a process, `agent`/`skill` run a thread. */
 export const runStep = (
@@ -48,10 +55,6 @@ export const runStep = (
     case "skill":
       return runAgentOrSkillStep(step, context);
     case "action":
-      return Effect.fail(
-        new RoutineStepError({
-          message: `Action steps are not supported by the lean executor (step "${step.id}").`,
-        }),
-      );
+      return runActionStep(step, context);
   }
 };

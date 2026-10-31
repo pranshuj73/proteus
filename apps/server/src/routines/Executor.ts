@@ -135,7 +135,12 @@ const make = Effect.gen(function* () {
         };
         yield* persistStep(running);
 
-        const outcome = yield* Effect.exit(runStep(step, stepContext));
+        const outcome = yield* Effect.exit(
+          runStep(step, {
+            ...stepContext,
+            onThreadLaunched: (threadId) => persistStep({ ...running, threadId }),
+          }),
+        );
         const finishedAt = yield* nowIso;
         const result = Exit.isSuccess(outcome) ? outcome.value : undefined;
         // A command's `fail` verdict only continues the walk when the step routes it explicitly.
@@ -292,8 +297,17 @@ const make = Effect.gen(function* () {
     if (execution.status !== "running" || fiber === undefined) {
       return yield* new RoutineError({ message: `Routine execution ${id} is not running.` });
     }
-    // The agent step's thread may keep running; RoutineThreadRunner has no stop seam yet.
     yield* Fiber.interrupt(fiber);
+    for (const step of steps) {
+      if (step.status === "running" && step.threadId !== null) {
+        yield* threads.stopThread({ projectId: execution.projectId, threadId: step.threadId }).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("Failed to stop routine agent thread", { error }),
+          ),
+          Effect.ignore,
+        );
+      }
+    }
     const finishedAt = yield* nowIso;
     for (const step of steps) {
       if (step.status === "running") {

@@ -23,6 +23,11 @@ export class RoutineGitProvisioner extends Context.Service<
     readonly provisionWorktree: (
       input: RoutineWorktreeInput,
     ) => Effect.Effect<RoutineWorktree, RoutineError>;
+    /** Pushes the worktree's current branch; `pushed` is false when it was already up to date. */
+    readonly pushBranch: (input: {
+      readonly cwd: string;
+      readonly actionId: string;
+    }) => Effect.Effect<{ readonly pushed: boolean; readonly branch: string | null }, RoutineError>;
   }
 >()("t3/routines/adapters/git/RoutineGitProvisioner") {}
 
@@ -49,7 +54,20 @@ const make = Effect.gen(function* () {
     return { worktreePath: result.worktree.path, branch: result.worktree.refName };
   });
 
-  return RoutineGitProvisioner.of({ provisionWorktree });
+  const pushBranch: RoutineGitProvisioner["Service"]["pushBranch"] = Effect.fn(
+    "RoutineGitProvisioner.pushBranch",
+  )(function* (input) {
+    const result = yield* git
+      .runStackedAction({ actionId: input.actionId, cwd: input.cwd, action: "push" })
+      .pipe(
+        Effect.mapError(
+          (cause) => new RoutineError({ message: "Failed to push the routine branch.", cause }),
+        ),
+      );
+    return { pushed: result.push.status === "pushed", branch: result.push.branch ?? null };
+  });
+
+  return RoutineGitProvisioner.of({ provisionWorktree, pushBranch });
 });
 
 export const layer = Layer.effect(RoutineGitProvisioner, make);
