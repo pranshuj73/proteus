@@ -6,6 +6,7 @@ import {
   RoutineExecutionId,
   type RoutineExecutionResult,
   type RoutineExecutionsResult,
+  type RoutineCancelResult,
   type RoutineStartInput,
   type RoutineStartResult,
   type RoutineStepId,
@@ -16,6 +17,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -46,6 +48,7 @@ export class Executor extends Context.Service<
   Executor,
   {
     readonly start: (input: RoutineStartInput) => Effect.Effect<RoutineStartResult, RoutineError>;
+    readonly cancel: (id: RoutineExecutionId) => Effect.Effect<RoutineCancelResult, RoutineError>;
     readonly subscribeExecutions: (
       projectId: ProjectId,
     ) => Stream.Stream<RoutineExecutionsResult, RoutineError>;
@@ -68,6 +71,8 @@ const make = Effect.gen(function* () {
   const stepEnv = yield* Effect.context<RoutineStepRequirements>();
   // Subscribers only need the newest dirty signal; each one re-reads full state.
   const changesPubSub = yield* PubSub.sliding<void>(1);
+
+  const runningFibers = new Map<RoutineExecutionId, Fiber.Fiber<void>>();
 
   const notify = PubSub.publish(changesPubSub, undefined).pipe(Effect.asVoid);
 
@@ -180,18 +185,21 @@ const make = Effect.gen(function* () {
     },
     (effect, initial) =>
       effect.pipe(
-        Effect.catchCause((cause) =>
-          nowIso.pipe(
-            Effect.flatMap((finishedAt) =>
-              persistExecution({
-                ...initial,
-                status: "failed",
-                error: causeMessage(cause, "Execution failed unexpectedly."),
-                updatedAt: finishedAt,
-                finishedAt,
-              }),
+        // Cancellation interrupts the walk and persists its own status; do not overwrite it.
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            nowIso.pipe(
+              Effect.flatMap((finishedAt) =>
+                persistExecution({
+                  ...initial,
+                  status: "failed",
+                  error: causeMessage(cause, "Execution failed unexpectedly."),
+                  updatedAt: finishedAt,
+                  finishedAt,
+                }),
+              ),
             ),
-          ),
         ),
       ),
   );
@@ -267,13 +275,45 @@ const make = Effect.gen(function* () {
 
     yield* repository.insertExecution(execution);
     yield* notify;
-    yield* Effect.forkIn(
+    const fiber = yield* Effect.forkIn(
       runExecution(execution, { type: "existing_worktree", ...worktree }, modelSelection).pipe(
         Effect.provide(stepEnv),
+        Effect.ensuring(Effect.sync(() => void runningFibers.delete(execution.id))),
       ),
       layerScope,
     );
+    runningFibers.set(execution.id, fiber);
     return { execution };
+  });
+
+  const cancel: Executor["Service"]["cancel"] = Effect.fn("Executor.cancel")(function* (id) {
+    const { execution, steps } = yield* readExecution(id);
+    const fiber = runningFibers.get(id);
+    if (execution.status !== "running" || fiber === undefined) {
+      return yield* new RoutineError({ message: `Routine execution ${id} is not running.` });
+    }
+    // The agent step's thread may keep running; RoutineThreadRunner has no stop seam yet.
+    yield* Fiber.interrupt(fiber);
+    const finishedAt = yield* nowIso;
+    for (const step of steps) {
+      if (step.status === "running") {
+        yield* persistStep({
+          ...step,
+          executionId: id,
+          status: "failed",
+          error: "Cancelled",
+          finishedAt,
+        });
+      }
+    }
+    const cancelled: RoutineExecution = {
+      ...execution,
+      status: "cancelled",
+      updatedAt: finishedAt,
+      finishedAt,
+    };
+    yield* persistExecution(cancelled);
+    return { execution: cancelled };
   });
 
   const readExecution = Effect.fn("Executor.readExecution")(function* (id: RoutineExecutionId) {
@@ -305,7 +345,7 @@ const make = Effect.gen(function* () {
   const subscribeExecution: Executor["Service"]["subscribeExecution"] = (id) =>
     subscribeTo(readExecution(id));
 
-  return Executor.of({ start, subscribeExecutions, subscribeExecution });
+  return Executor.of({ start, cancel, subscribeExecutions, subscribeExecution });
 });
 
 export const layer = Layer.effect(Executor, make);

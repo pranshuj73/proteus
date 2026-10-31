@@ -169,6 +169,7 @@ export const RoutineExecutionStatus = Schema.Literals([
   "failed",
   "awaiting_review",
   "completed",
+  "cancelled",
 ]);
 export type RoutineExecutionStatus = typeof RoutineExecutionStatus.Type;
 
@@ -223,6 +224,16 @@ export const RoutineStartResult = Schema.Struct({
   execution: RoutineExecution,
 });
 export type RoutineStartResult = typeof RoutineStartResult.Type;
+
+export const RoutineCancelInput = Schema.Struct({
+  executionId: RoutineExecutionId,
+});
+export type RoutineCancelInput = typeof RoutineCancelInput.Type;
+
+export const RoutineCancelResult = Schema.Struct({
+  execution: RoutineExecution,
+});
+export type RoutineCancelResult = typeof RoutineCancelResult.Type;
 
 export const RoutineExecutionsInput = Schema.Struct({
   projectId: ProjectId,

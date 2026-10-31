@@ -5,6 +5,8 @@ import {
   type RoutineExecutionsResult,
   type RoutineListInput,
   type RoutineListResult,
+  type RoutineCancelInput,
+  type RoutineCancelResult,
   type RoutineStartInput,
   type RoutineStartResult,
   RoutineError,
@@ -26,6 +28,9 @@ export class RoutineService extends Context.Service<
   {
     readonly list: (input: RoutineListInput) => Effect.Effect<RoutineListResult, RoutineError>;
     readonly start: (input: RoutineStartInput) => Effect.Effect<RoutineStartResult, RoutineError>;
+    readonly cancel: (
+      input: RoutineCancelInput,
+    ) => Effect.Effect<RoutineCancelResult, RoutineError>;
     readonly subscribeExecutions: (
       input: RoutineExecutionsInput,
     ) => Stream.Stream<RoutineExecutionsResult, RoutineError>;
@@ -71,6 +76,9 @@ const make = Effect.gen(function* () {
   return RoutineService.of({
     list,
     start: executor.start,
+    cancel: Effect.fn("RoutineService.cancel")((input: RoutineCancelInput) =>
+      executor.cancel(input.executionId),
+    ),
     subscribeExecutions: (input) => executor.subscribeExecutions(input.projectId),
     subscribeExecution: (input) => executor.subscribeExecution(input.executionId),
   });

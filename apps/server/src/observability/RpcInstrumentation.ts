@@ -96,6 +96,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.scheduledTasksGetWebhookDelivery]: "scheduledTasks",
   [WS_METHODS.routinesList]: "routines",
   [WS_METHODS.routinesStart]: "routines",
+  [WS_METHODS.routinesCancel]: "routines",
   [WS_METHODS.routinesSubscribeExecutions]: "routines",
   [WS_METHODS.routinesSubscribeExecution]: "routines",
   [WS_METHODS.secretsAnswerRequest]: "secrets",

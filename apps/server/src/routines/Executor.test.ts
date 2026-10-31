@@ -9,6 +9,7 @@ import {
   type RoutineId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -33,6 +34,7 @@ interface Fakes {
   readonly exitCode?: number;
   readonly verdictText?: string;
   readonly seen?: Array<string>;
+  readonly gate?: Deferred.Deferred<void>;
 }
 
 const withExecutor = <A, E>(
@@ -73,14 +75,17 @@ const withExecutor = <A, E>(
           }),
           Layer.mock(RoutineThreadRunner)({
             runAgentStep: ({ prompt, modelSelection, workspaceStrategy }) =>
-              Effect.sync(
-                () =>
-                  void fakes.seen?.push(
-                    prompt,
-                    modelSelection?.model ?? "",
-                    workspaceStrategy.worktreePath,
+              (fakes.gate === undefined ? Effect.void : Deferred.await(fakes.gate)).pipe(
+                Effect.andThen(
+                  Effect.sync(
+                    () =>
+                      void fakes.seen?.push(
+                        prompt,
+                        modelSelection?.model ?? "",
+                        workspaceStrategy.worktreePath,
+                      ),
                   ),
-              ).pipe(
+                ),
                 Effect.as({
                   threadId: ThreadId.make("routine-thread"),
                   verdictText: fakes.verdictText ?? "",
@@ -209,6 +214,60 @@ it.effect("an agent step records the parsed VERDICT line", () =>
         assert.equal(step?.threadId, ThreadId.make("routine-thread"));
       }),
   ),
+);
+
+it.effect("an agent step with no valid verdict fails the step and execution", () =>
+  withExecutor(
+    {
+      verdictText: "All good, no verdict line.",
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "review",
+            kind: "agent",
+            purpose: "Review the change",
+            verdict: { labels: ["approved", "changes"] },
+          },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "failed");
+        assert.include(settled.steps[0]?.error ?? "", "approved, changes");
+      }),
+  ),
+);
+
+it.effect("cancelling a running execution ends it cancelled", () =>
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    return yield* withExecutor(
+      {
+        gate,
+        routine: {
+          version: 1,
+          name: "demo",
+          steps: [{ id: "review", kind: "agent", purpose: "Review", verdict: { labels: ["ok"] } }],
+        },
+      },
+      (executor) =>
+        Effect.gen(function* () {
+          const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+          const cancelled = yield* executor.cancel(execution.id);
+          assert.equal(cancelled.execution.status, "cancelled");
+          const settled = yield* awaitSettled(executor, execution.id);
+          assert.equal(settled.execution.status, "cancelled");
+          assert.notEqual(settled.execution.finishedAt, null);
+          const again = yield* executor.cancel(execution.id).pipe(Effect.flip);
+          assert.equal(again._tag, "RoutineError");
+        }),
+    );
+  }),
 );
 
 it.effect("starting an invalid routine fails with RoutineError", () =>

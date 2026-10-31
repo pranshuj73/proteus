@@ -25,6 +25,7 @@ const STATUS_BADGE: Record<
   awaiting_review: { variant: "warning", label: "Awaiting review" },
   completed: { variant: "success", label: "Completed" },
   failed: { variant: "error", label: "Failed" },
+  cancelled: { variant: "secondary", label: "Cancelled" },
 };
 
 export function RoutineExecutionsList({

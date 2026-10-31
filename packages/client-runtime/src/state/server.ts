@@ -1304,6 +1304,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:start",
       tag: WS_METHODS.routinesStart,
     }),
+    cancelRoutine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:cancel",
+      tag: WS_METHODS.routinesCancel,
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,

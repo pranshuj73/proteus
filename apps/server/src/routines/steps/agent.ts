@@ -7,7 +7,11 @@ import {
 import * as Effect from "effect/Effect";
 
 import { RoutineThreadRunner } from "../adapters/threads.ts";
-import type { RoutineStepContext, RoutineStepOutcome } from "./StepRunner.ts";
+import {
+  RoutineStepError,
+  type RoutineStepContext,
+  type RoutineStepOutcome,
+} from "./StepRunner.ts";
 
 const OUTPUT_EXCERPT_BYTES = 16384;
 
@@ -29,8 +33,8 @@ const buildPrompt = (
   return `${context}Use the "${skillName}" skill.\n${step.prompt ?? ""}\n\n${verdictInstruction(labels)}`;
 };
 
-/** Parses the trailing `VERDICT: <label> - <reason>` line; defaults when absent or unknown. */
-const parseVerdict = (text: string, labels: ReadonlyArray<string>): RoutineVerdict => {
+/** Parses the trailing `VERDICT: <label> - <reason>` line; null when absent or unknown. */
+const parseVerdict = (text: string, labels: ReadonlyArray<string>): RoutineVerdict | null => {
   const lines = text.split(/\r?\n/);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const match = lines[index]?.match(/^\s*verdict:\s*(.+)$/i);
@@ -45,7 +49,7 @@ const parseVerdict = (text: string, labels: ReadonlyArray<string>): RoutineVerdi
     }
     break;
   }
-  return { label: labels[0] ?? "", reason: "no verdict line; defaulted" };
+  return null;
 };
 
 const tailBytes = (text: string, maxBytes: number): string => {
@@ -72,8 +76,23 @@ export const runAgentOrSkillStep = Effect.fn("RoutineSteps.runAgentOrSkillStep")
     ...(step.timeoutMs === undefined ? {} : { timeoutMs: step.timeoutMs }),
   });
 
+  const parsed = parseVerdict(result.verdictText, labels);
+  // A single allowed label leaves nothing to choose, so a missing verdict still resolves.
+  const onlyLabel = labels.length === 1 ? labels[0] : undefined;
+  const verdict =
+    parsed ??
+    (onlyLabel === undefined ? null : { label: onlyLabel, reason: "no verdict line; defaulted" });
+  if (verdict === null) {
+    const excerpt = tailBytes(result.verdictText, 500).trim();
+    return yield* new RoutineStepError({
+      message: `Agent reported no valid verdict. Expected "VERDICT: <label>" with one of: ${labels.join(", ")}.${
+        excerpt.length > 0 ? ` Output ended: ${excerpt}` : ""
+      }`,
+    });
+  }
+
   return {
-    verdict: parseVerdict(result.verdictText, labels),
+    verdict,
     outputExcerpt: tailBytes(result.verdictText, OUTPUT_EXCERPT_BYTES),
     threadId: result.threadId,
   } satisfies RoutineStepOutcome;
