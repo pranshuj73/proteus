@@ -47,6 +47,7 @@ interface Fakes {
   readonly verdictText?: string;
   readonly verdictQueue?: Array<string>;
   readonly cleanWorktree?: boolean;
+  readonly autoResume?: boolean;
   readonly continued?: Array<string>;
   /** The agent step's thread asks this once; the answers it receives land in `answers`. */
   readonly question?: ReadonlyArray<OrchestrationV2UserInputQuestion>;
@@ -192,7 +193,7 @@ const withExecutor = <A, E>(
           Layer.mock(RoutineSkillInstaller)({}),
           Layer.mock(ServerSettings.ServerSettingsService)({
             getSettings: Effect.succeed({
-              continueThreadsAfterServerUpdate: false,
+              continueThreadsAfterServerUpdate: fakes.autoResume === true,
             } as ServerSettingsValue),
           }),
           NodeCrypto.layer,
@@ -906,63 +907,66 @@ const resumeRoutine = {
 };
 const resumeId = "routine-execution:resume" as RoutineExecutionId;
 
-const seedInterrupted = Effect.gen(function* () {
-  const repository = yield* ExecutionRepository.ExecutionRepository;
-  const at = "2026-01-01T00:00:00.000Z";
-  const row = {
-    executionId: resumeId,
-    attempt: 1,
-    outputExcerpt: null,
-    error: null,
-    startedAt: at,
-  };
-  yield* repository.setApproval({
-    projectId,
-    routineId,
-    hash: "hash",
-    definition: resumeRoutine,
-    approvedAt: at,
+const seedInterrupted = (runningStep: "build" | "review") =>
+  Effect.gen(function* () {
+    const repository = yield* ExecutionRepository.ExecutionRepository;
+    const at = "2026-01-01T00:00:00.000Z";
+    const row = {
+      executionId: resumeId,
+      attempt: 1,
+      outputExcerpt: null,
+      error: null,
+      startedAt: at,
+    };
+    yield* repository.setApproval({
+      projectId,
+      routineId,
+      hash: "hash",
+      definition: resumeRoutine,
+      approvedAt: at,
+    });
+    yield* repository.addAllowlist({ projectId, executable: "make", addedAt: at });
+    yield* repository.insertExecution({
+      id: resumeId,
+      projectId,
+      routineId,
+      routineHash: "hash",
+      definition: resumeRoutine,
+      brief: "",
+      status: "running",
+      worktreePath: "/worktrees/kept",
+      branch: "routine/kept",
+      error: null,
+      createdAt: at,
+      updatedAt: at,
+      finishedAt: null,
+    });
+    yield* repository.upsertStep({
+      ...row,
+      stepId: RoutineStepId.make("build"),
+      status: runningStep === "build" ? "running" : "done",
+      verdict: runningStep === "build" ? null : { label: "pass", reason: "ok" },
+      threadId: null,
+      finishedAt: runningStep === "build" ? null : at,
+    });
+    if (runningStep === "review") {
+      yield* repository.upsertStep({
+        ...row,
+        stepId: RoutineStepId.make("review"),
+        status: "running",
+        verdict: null,
+        threadId: ThreadId.make("old-thread"),
+        finishedAt: null,
+      });
+    }
+    yield* repository.saveFrontier(resumeId, {
+      ready: [RoutineStepId.make(runningStep)],
+      waiting: [],
+      attempts: runningStep === "build" ? {} : { build: 1 },
+      head: "",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "default-model" },
+    });
   });
-  yield* repository.addAllowlist({ projectId, executable: "make", addedAt: at });
-  yield* repository.insertExecution({
-    id: resumeId,
-    projectId,
-    routineId,
-    routineHash: "hash",
-    definition: resumeRoutine,
-    brief: "",
-    status: "running",
-    worktreePath: "/worktrees/kept",
-    branch: "routine/kept",
-    error: null,
-    createdAt: at,
-    updatedAt: at,
-    finishedAt: null,
-  });
-  yield* repository.upsertStep({
-    ...row,
-    stepId: RoutineStepId.make("build"),
-    status: "done",
-    verdict: { label: "pass", reason: "ok" },
-    threadId: null,
-    finishedAt: at,
-  });
-  yield* repository.upsertStep({
-    ...row,
-    stepId: RoutineStepId.make("review"),
-    status: "running",
-    verdict: null,
-    threadId: ThreadId.make("old-thread"),
-    finishedAt: null,
-  });
-  yield* repository.saveFrontier(resumeId, {
-    ready: [RoutineStepId.make("review")],
-    waiting: [],
-    attempts: { build: 1 },
-    head: "",
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "default-model" },
-  });
-});
 
 it.effect.each([
   { clean: true, thread: "old-thread" },
@@ -976,7 +980,7 @@ it.effect.each([
       continued,
       cleanWorktree: clean,
       routine: resumeRoutine,
-      seed: seedInterrupted,
+      seed: seedInterrupted("review"),
     },
     (executor, raw) =>
       Effect.gen(function* () {
@@ -997,6 +1001,55 @@ it.effect.each([
           !clean,
         );
         assert.equal(finished.steps.filter((step) => step.stepId === "build").length, 1);
+      }),
+  );
+});
+
+it.effect("auto-resume continues agent steps but holds interrupted command steps", () =>
+  Effect.gen(function* () {
+    yield* withExecutor(
+      {
+        autoResume: true,
+        cleanWorktree: true,
+        routine: resumeRoutine,
+        seed: seedInterrupted("review"),
+      },
+      (executor) =>
+        executor.subscribeExecution(resumeId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+          Stream.runHead,
+        ),
+    );
+    yield* withExecutor(
+      { autoResume: true, routine: resumeRoutine, seed: seedInterrupted("build") },
+      (executor) =>
+        Effect.gen(function* () {
+          const held = yield* executor
+            .subscribeExecution(resumeId)
+            .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+          assert.equal(held.execution.status, "interrupted");
+          assert.include(held.execution.error ?? "", "may still be running");
+        }),
+    );
+  }),
+);
+
+it.effect("an action step commits pending step output before pushing", () => {
+  const gitCalls: Array<string> = [];
+  return withExecutor(
+    {
+      gitCalls,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "push", kind: "action", action: "git.push" }],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        yield* awaitSettled(executor, execution.id);
+        assert.isTrue(gitCalls.some((call) => call.includes("commit -m Routine step output")));
       }),
   );
 });

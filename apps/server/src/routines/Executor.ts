@@ -82,6 +82,7 @@ import {
 } from "./steps/StepRunner.ts";
 
 const RESTART_ERROR = "Interrupted by a server restart";
+const COMMAND_RESTART_ERROR = `${RESTART_ERROR}. Its command may still be running, so check before resuming.`;
 const COUNCIL_TIMEOUT_MS = 10 * 60 * 1000;
 const SUMMARY_MAX_CHARS = 1500;
 const EARLIER_DECISIONS_LIMIT = 20;
@@ -451,6 +452,10 @@ const make = Effect.gen(function* () {
               branch = { type: "existing_worktree", ...provisioned };
             }
             const strategy = branch ?? workspaceStrategy;
+            // Pushes and PRs only carry commits, so step output must be committed first.
+            if (step.kind === "action") {
+              yield* commitAll(strategy.worktreePath, "Routine step output");
+            }
             const continueThreadId = continueThreads.get(step.id);
             continueThreads.delete(step.id);
             return yield* runStep(step, {
@@ -1156,6 +1161,13 @@ const make = Effect.gen(function* () {
   for (const execution of interrupted) {
     const steps = yield* repository.listSteps(execution.id);
     const finishedAt = yield* nowIso;
+    // A hard kill can leave the command's process alive, and a rerun would race it.
+    const commandInterrupted = steps.some(
+      (step) =>
+        step.status === "running" &&
+        execution.definition.steps.find((candidate) => candidate.id === step.stepId)?.kind ===
+          "command",
+    );
     for (const step of steps) {
       if (step.status === "running") {
         yield* persistStep({
@@ -1171,12 +1183,12 @@ const make = Effect.gen(function* () {
     const parked: RoutineExecution = {
       ...execution,
       status: resumable ? "interrupted" : "failed",
-      error: RESTART_ERROR,
+      error: resumable && commandInterrupted ? COMMAND_RESTART_ERROR : RESTART_ERROR,
       updatedAt: finishedAt,
       finishedAt: resumable ? null : finishedAt,
     };
     yield* persistExecution(parked);
-    if (resumable && autoResume) {
+    if (resumable && autoResume && !commandInterrupted) {
       yield* resumeWalk(parked).pipe(
         Effect.catchCause((cause) => Effect.logWarning("Routine auto-resume failed", { cause })),
       );
