@@ -26,7 +26,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { RoutineGraph } from "./RoutineGraph";
 import { diffRoutineDefinitions, isEmptyRoutineDiff } from "./routineGraphDiff";
-import { NewRoutineButton } from "./NewRoutineButton";
+import { EditRoutineButton, NewRoutineButton } from "./NewRoutineButton";
 import { RoutineExecutionsList } from "./RoutineExecutionsList";
 import { RoutineRunDialog } from "./RoutineRunDialog";
 
@@ -286,6 +286,11 @@ function RoutineCard({
               Revoke
             </Button>
           ) : null}
+          <EditRoutineButton
+            environmentId={environmentId}
+            projectId={projectId}
+            path={summary.path}
+          />
           <RoutineRunDialog
             environmentId={environmentId}
             projectId={projectId}

@@ -32,10 +32,16 @@ export interface RoutineSaveInput {
   readonly projectId: ProjectId;
   readonly routineId: RoutineId;
   readonly definition: RoutineDefinition;
+  /** Keeps a draft that still fails validation; it shows as invalid and cannot be approved. */
+  readonly saveInvalid?: boolean | undefined;
 }
 
 export type RoutineSaveOutput =
-  | { readonly saved: true; readonly path: string }
+  | {
+      readonly saved: true;
+      readonly path: string;
+      readonly issues?: ReadonlyArray<RoutineValidationIssue>;
+    }
   | { readonly saved: false; readonly issues: ReadonlyArray<RoutineValidationIssue> };
 
 export interface RoutineSkillsInput {
@@ -100,7 +106,7 @@ const make = Effect.gen(function* () {
     "RoutineAuthoring.saveDefinition",
   )(function* (input) {
     const issues = validateRoutine(input.definition);
-    if (issues.length > 0) {
+    if (issues.length > 0 && input.saveInvalid !== true) {
       return { saved: false, issues };
     }
     const workspaceRoot = yield* resolveWorkspaceRoot(input.projectId);
@@ -113,7 +119,11 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
       Effect.mapError((cause) => new RoutineError({ message: "Failed to write routine.", cause })),
     );
-    return { saved: true, path: `.proteus/routines/${input.routineId}.json` };
+    return {
+      saved: true,
+      path: `.proteus/routines/${input.routineId}.json`,
+      ...(issues.length > 0 ? { issues } : {}),
+    };
   });
 
   const listSkills: RoutineAuthoring["Service"]["listSkills"] = Effect.fn(

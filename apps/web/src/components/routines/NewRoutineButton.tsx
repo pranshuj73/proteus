@@ -1,16 +1,35 @@
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
-import { ROUTINE_AUTHOR_INSTRUCTIONS } from "@t3tools/contracts";
+import { routineEditPrompt, routineNewPrompt } from "@t3tools/contracts";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { PlusIcon } from "lucide-react";
 
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { Button } from "../ui/button";
 
-const NEW_ROUTINE_PROMPT = `${ROUTINE_AUTHOR_INSTRUCTIONS}
-
----
-Describe the use case you want this routine to automate, then I will draft, validate, and save it:
-`;
+export function EditRoutineButton({
+  environmentId,
+  projectId,
+  path,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly path: string;
+}) {
+  const handleNewThread = useNewThreadHandler();
+  return (
+    <Button
+      size="compact"
+      variant="ghost"
+      onClick={() => {
+        void handleNewThread(scopeProjectRef(environmentId, projectId), {
+          prompt: routineEditPrompt(path),
+        });
+      }}
+    >
+      Edit
+    </Button>
+  );
+}
 
 export function NewRoutineButton({
   environmentId,
@@ -26,7 +45,7 @@ export function NewRoutineButton({
       variant="default"
       onClick={() => {
         void handleNewThread(scopeProjectRef(environmentId, projectId), {
-          prompt: NEW_ROUTINE_PROMPT,
+          prompt: routineNewPrompt(),
         });
       }}
     >

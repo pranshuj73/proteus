@@ -218,6 +218,13 @@ export function useComposerMenuItems({
           label: "/model",
           description: "Switch response model for this thread",
         },
+        {
+          id: "slash:routine",
+          type: "slash-command",
+          command: "routine",
+          label: "/routine",
+          description: "Draft a routine from a described use case",
+        },
         ...(planModeUiEnabled
           ? ([
               {

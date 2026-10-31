@@ -41,14 +41,19 @@ const RoutineValidateTool = Tool.make("t3_routine_validate", {
 const RoutineSaveTool = Tool.make("t3_routine_save", {
   ...shared,
   description:
-    "Save a routine to .proteus/routines/<routineId>.json after it validates with no issues. Returns the written path, or the remaining issues when it does not validate.",
+    "Save a routine to .proteus/routines/<routineId>.json after it validates with no issues. Returns the written path, or the remaining issues when it does not validate. After three failed repairs, pass saveInvalid to keep the draft with its issues.",
   parameters: Schema.Struct({
     projectId: ProjectId,
     routineId: RoutineId,
     definition: RoutineDefinition,
+    saveInvalid: Schema.optional(Schema.Boolean),
   }),
   success: Schema.Union([
-    Schema.Struct({ saved: Schema.Literal(true), path: Schema.String }),
+    Schema.Struct({
+      saved: Schema.Literal(true),
+      path: Schema.String,
+      issues: Schema.optional(Schema.Array(RoutineValidationIssue)),
+    }),
     Schema.Struct({ saved: Schema.Literal(false), issues: Schema.Array(RoutineValidationIssue) }),
   ]),
 })

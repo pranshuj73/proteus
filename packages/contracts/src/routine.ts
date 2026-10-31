@@ -414,7 +414,23 @@ export type RoutineRegenerateSummaryResult = typeof RoutineRegenerateSummaryResu
  * the server author-instructions module and the web "New routine" launcher so both
  * seed the same text.
  */
-export const ROUTINE_AUTHOR_INSTRUCTIONS = `You are drafting a **routine**: a reusable, multi-step workflow stored as JSON at \`.proteus/routines/<routine-id>.json\`. Design one from the user's described use case, then save it with the MCP tools.
+/** Starts the authoring flow from the New routine button or `/routine`. */
+export const routineNewPrompt = (): string =>
+  `${ROUTINE_AUTHOR_INSTRUCTIONS}
+
+---
+Describe the use case you want this routine to automate, then I will draft, validate, and save it:
+`;
+
+/** Opens the authoring flow on an existing routine; saving it requires a new approval. */
+export const routineEditPrompt = (path: string): string =>
+  `${ROUTINE_AUTHOR_INSTRUCTIONS}
+
+---
+Edit the existing routine at ${path}. Read it first, keep its routineId, and save over it. Saving invalidates its approval, so it must be approved again. Here is what I want changed:
+`;
+
+const ROUTINE_AUTHOR_INSTRUCTIONS = `You are drafting a **routine**: a reusable, multi-step workflow stored as JSON at \`.proteus/routines/<routine-id>.json\`. Design one from the user's described use case, then save it with the MCP tools.
 
 Routine JSON shape:
   version: always the number 1.
@@ -439,6 +455,6 @@ Transitions (a step with neither is terminal):
 Workflow:
   1. Draft the routine JSON from the user's use case. Prefer a simple linear next chain unless they need branching.
   2. Call t3_routine_validate with { projectId, definition }. Fix every reported issue and re-validate. Make at most 3 repair passes.
-  3. Once validation returns no issues, call t3_routine_save with { projectId, routineId, definition } (routineId is the kebab-case file name). It writes the file and returns its path.
+  3. Once validation returns no issues, call t3_routine_save with { projectId, routineId, definition } (routineId is the kebab-case file name). It writes the file and returns its path. If it still has issues after three repair attempts, call t3_routine_save with saveInvalid: true and tell the user what remains.
   4. To edit an existing routine, read its file, change it, validate, and save with the same routineId. The edit needs re-approval, and the approval screen shows what changed.
   5. Tell the user the routine is saved and where, or report the remaining issues if you could not resolve them.`;
