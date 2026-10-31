@@ -43,6 +43,9 @@ export function RoutineExecutionControls({
   }
   if (execution.status !== "failed" && execution.status !== "needs_attention") return null;
 
+  // Conflicted branches finished their step, so the step comes from the merge error.
+  const conflictStep = execution.error?.match(/^Merge conflict joining step "([^"]+)"/)?.[1];
+  const conflicted = execution.definition.steps.find((step) => step.id === conflictStep);
   const failed = steps.findLast((step) => step.status === "failed");
   const definition = execution.definition.steps.find((step) => step.id === failed?.stepId);
   return (
@@ -50,7 +53,24 @@ export function RoutineExecutionControls({
       <Button size="compact" variant="ghost" onClick={() => send({ executionId, action: "retry" })}>
         Retry
       </Button>
-      {failed === undefined || definition === undefined
+      {conflicted === undefined ? null : (
+        <Button
+          size="compact"
+          variant="ghost"
+          onClick={() =>
+            send({
+              executionId,
+              action: "skip",
+              stepId: conflicted.id,
+              label: routineStepVerdictLabels(conflicted)[0] ?? "",
+              reason: "Branch dropped in the Routines tab",
+            })
+          }
+        >
+          Drop {conflicted.title ?? conflicted.id} branch
+        </Button>
+      )}
+      {conflicted !== undefined || failed === undefined || definition === undefined
         ? null
         : routineStepVerdictLabels(definition).map((label) => (
             <Button
