@@ -3,6 +3,7 @@ import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./gi
 import {
   AuthAccessWriteScope,
   AuthOrchestrationOperateScope,
+  AuthRoutineApproveScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
   AuthSettingsWriteScope,
@@ -62,7 +63,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.routinesStart]: AuthOrchestrationOperateScope,
   [WS_METHODS.routinesCancel]: AuthOrchestrationOperateScope,
   [WS_METHODS.routinesComplete]: AuthOrchestrationOperateScope,
-  [WS_METHODS.routinesApprove]: AuthOrchestrationOperateScope,
+  [WS_METHODS.routinesApprove]: AuthRoutineApproveScope,
+  [WS_METHODS.routinesRevoke]: AuthRoutineApproveScope,
+  [WS_METHODS.routinesRemoveExecutable]: AuthRoutineApproveScope,
   [WS_METHODS.routinesRegenerateSummary]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: AuthOrchestrationOperateScope,
   // Force stop kills agent processes, as Stop on a terminal does.

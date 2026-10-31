@@ -34,6 +34,11 @@ const projectId = ProjectId.make("routine-project");
 // Branded ids are plain strings at runtime; the routine file basename is the id.
 const routineId = "demo" as RoutineId;
 
+const testExecutables = (routine: unknown) =>
+  (
+    routine as { readonly steps: ReadonlyArray<{ readonly argv?: ReadonlyArray<string> }> }
+  ).steps.flatMap((step) => step.argv?.slice(0, 1) ?? []);
+
 interface Fakes {
   readonly routine: unknown;
   readonly exitCode?: number;
@@ -187,7 +192,11 @@ const withExecutor = <A, E>(
             ...raw,
             start: (input) =>
               raw
-                .approve({ projectId: input.projectId, routineId: input.routineId })
+                .approve({
+                  projectId: input.projectId,
+                  routineId: input.routineId,
+                  allowExecutables: testExecutables(fakes.routine),
+                })
                 .pipe(Effect.andThen(raw.start(input))),
           },
           raw,
@@ -674,7 +683,11 @@ it.effect("a routine must be approved at its current hash before it can run", ()
         const refused = yield* raw.start(input).pipe(Effect.flip);
         assert.include(refused.message, "must be approved");
 
-        const approval = yield* raw.approve({ projectId, routineId });
+        const approval = yield* raw.approve({
+          projectId,
+          routineId,
+          allowExecutables: ["make", "echo", "true", "pnpm", "npm", "node", "git"],
+        });
         const approvals = yield* raw.approvals(projectId);
         assert.equal(approvals.get(routineId)?.hash, approval.approvedHash);
         assert.equal(approvals.get(routineId)?.definition?.name, "demo");
@@ -682,6 +695,34 @@ it.effect("a routine must be approved at its current hash before it can run", ()
         const { execution } = yield* raw.start(input);
         assert.equal(execution.routineHash, approval.approvedHash);
         yield* awaitSettled(executor, execution.id);
+      }),
+  ),
+);
+
+it.effect("the allowlist gates approval and start, and revoke blocks the next run", () =>
+  withExecutor(
+    {
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "build", kind: "command", argv: ["make"] }],
+      },
+    },
+    (_, raw) =>
+      Effect.gen(function* () {
+        const input = { projectId, routineId, brief: "" };
+        const needsAllow = yield* raw.approve({ projectId, routineId }).pipe(Effect.flip);
+        assert.include(needsAllow.message, "make");
+        yield* raw.approve({ projectId, routineId, allowExecutables: ["make"] });
+
+        yield* raw.removeExecutable({ projectId, executable: "make" });
+        const blocked = yield* raw.start(input).pipe(Effect.flip);
+        assert.include(blocked.message, "outside the allowlist");
+
+        yield* raw.approve({ projectId, routineId, allowExecutables: ["make"] });
+        yield* raw.revoke({ projectId, routineId });
+        const revoked = yield* raw.start(input).pipe(Effect.flip);
+        assert.include(revoked.message, "must be approved");
       }),
   ),
 );
@@ -697,7 +738,11 @@ it.effect("an edited routine needs re-approval", () =>
     },
     (_executor, raw, rewrite) =>
       Effect.gen(function* () {
-        yield* raw.approve({ projectId, routineId });
+        yield* raw.approve({
+          projectId,
+          routineId,
+          allowExecutables: ["make", "echo", "true", "pnpm", "npm", "node", "git"],
+        });
         yield* rewrite({
           version: 1,
           name: "demo",

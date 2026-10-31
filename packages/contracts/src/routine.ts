@@ -115,6 +115,13 @@ export const RoutineDefinition = Schema.Struct({
 });
 export type RoutineDefinition = typeof RoutineDefinition.Type;
 
+/** Distinct executables a routine's command steps run. */
+export const routineExecutables = (definition: RoutineDefinition): ReadonlyArray<string> => [
+  ...new Set(
+    definition.steps.flatMap((step) => (step.kind === "command" ? [step.argv[0] ?? ""] : [])),
+  ),
+];
+
 /** The verdict labels a step can produce: declared for skill/agent, implicit for command/action. */
 export const routineStepVerdictLabels = (step: RoutineStep): ReadonlyArray<string> => {
   switch (step.kind) {
@@ -152,6 +159,8 @@ export const RoutineSummary = Schema.Struct({
   approved: Schema.Boolean,
   /** The definition last approved, kept so an edit can be diffed against it; null before any approval. */
   approvedDefinition: Schema.optional(Schema.NullOr(RoutineDefinition)),
+  /** Executables this routine runs that the project allowlist does not include. */
+  missingExecutables: Schema.Array(Schema.String),
 });
 export type RoutineSummary = typeof RoutineSummary.Type;
 
@@ -162,6 +171,8 @@ export type RoutineListInput = typeof RoutineListInput.Type;
 
 export const RoutineListResult = Schema.Struct({
   routines: ForwardCompatibleArray(RoutineSummary),
+  /** Executables approved for this project's routines. */
+  allowlist: Schema.Array(Schema.String),
 });
 export type RoutineListResult = typeof RoutineListResult.Type;
 
@@ -282,6 +293,8 @@ export type RoutineStartResult = typeof RoutineStartResult.Type;
 export const RoutineApproveInput = Schema.Struct({
   projectId: ProjectId,
   routineId: RoutineId,
+  /** Executables to add to the project allowlist with this approval. */
+  allowExecutables: Schema.optional(Schema.Array(Schema.String)),
 });
 export type RoutineApproveInput = typeof RoutineApproveInput.Type;
 
@@ -290,6 +303,18 @@ export const RoutineApproveResult = Schema.Struct({
   approvedHash: Schema.String,
 });
 export type RoutineApproveResult = typeof RoutineApproveResult.Type;
+
+export const RoutineRevokeInput = Schema.Struct({
+  projectId: ProjectId,
+  routineId: RoutineId,
+});
+export type RoutineRevokeInput = typeof RoutineRevokeInput.Type;
+
+export const RoutineRemoveExecutableInput = Schema.Struct({
+  projectId: ProjectId,
+  executable: Schema.String,
+});
+export type RoutineRemoveExecutableInput = typeof RoutineRemoveExecutableInput.Type;
 
 export const RoutineCancelInput = Schema.Struct({
   executionId: RoutineExecutionId,

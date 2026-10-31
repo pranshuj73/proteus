@@ -23,6 +23,9 @@ import {
   type RoutineCancelResult,
   type RoutineCompleteInput,
   type RoutineCompleteResult,
+  type RoutineRemoveExecutableInput,
+  type RoutineRevokeInput,
+  routineExecutables,
   type RoutineStartInput,
   type RoutineStartResult,
   type RoutineId,
@@ -92,6 +95,13 @@ export class Executor extends Context.Service<
       ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
       RoutineError
     >;
+    readonly revoke: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
+    readonly removeExecutable: (
+      input: RoutineRemoveExecutableInput,
+    ) => Effect.Effect<void, RoutineError>;
+    readonly allowlist: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<string>, RoutineError>;
     readonly cancel: (id: RoutineExecutionId) => Effect.Effect<RoutineCancelResult, RoutineError>;
     readonly complete: (
       input: RoutineCompleteInput,
@@ -577,6 +587,21 @@ const make = Effect.gen(function* () {
 
   const approve: Executor["Service"]["approve"] = Effect.fn("Executor.approve")(function* (input) {
     const { hash, definition } = yield* loadRunnable(input.projectId, input.routineId);
+    const allowed = new Set([
+      ...(yield* repository.listAllowlist(input.projectId)),
+      ...(input.allowExecutables ?? []),
+    ]);
+    const missing = routineExecutables(definition).filter((name) => !allowed.has(name));
+    if (missing.length > 0) {
+      return yield* new RoutineError({
+        message: `Approving "${input.routineId}" needs these executables allowlisted: ${missing.join(", ")}.`,
+        routineId: input.routineId,
+      });
+    }
+    const addedAt = yield* nowIso;
+    for (const executable of input.allowExecutables ?? []) {
+      yield* repository.addAllowlist({ projectId: input.projectId, executable, addedAt });
+    }
     yield* repository.setApproval({
       projectId: input.projectId,
       routineId: input.routineId,
@@ -596,6 +621,16 @@ const make = Effect.gen(function* () {
     if (approvals.get(input.routineId)?.hash !== hash) {
       return yield* new RoutineError({
         message: `Routine "${input.routineId}" must be approved before it can run.`,
+        routineId: input.routineId,
+      });
+    }
+
+    // Approval alone is not enough: an executable can leave the allowlist after approval.
+    const allowlist = new Set(yield* repository.listAllowlist(input.projectId));
+    const blocked = routineExecutables(definition).filter((name) => !allowlist.has(name));
+    if (blocked.length > 0) {
+      return yield* new RoutineError({
+        message: `Routine "${input.routineId}" uses executables outside the allowlist: ${blocked.join(", ")}.`,
         routineId: input.routineId,
       });
     }
@@ -860,6 +895,9 @@ const make = Effect.gen(function* () {
     approvals: repository.listApprovals,
     cancel,
     complete,
+    revoke: repository.deleteApproval,
+    removeExecutable: repository.removeAllowlist,
+    allowlist: repository.listAllowlist,
     subscribeExecutions,
     subscribeExecution,
     councilRecords,

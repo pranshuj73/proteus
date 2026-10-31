@@ -133,6 +133,7 @@ function summarizeFile(input: {
       definition: null,
       issues,
       approved: false,
+      missingExecutables: [],
     };
   }
 
@@ -147,6 +148,7 @@ function summarizeFile(input: {
       definition: null,
       issues,
       approved: false,
+      missingExecutables: [],
     };
   }
 
@@ -160,6 +162,7 @@ function summarizeFile(input: {
     definition,
     issues,
     approved: false,
+    missingExecutables: [],
   };
 }
 

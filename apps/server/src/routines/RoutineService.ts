@@ -15,6 +15,9 @@ import {
   type RoutineCancelResult,
   type RoutineCompleteInput,
   type RoutineCompleteResult,
+  type RoutineRemoveExecutableInput,
+  type RoutineRevokeInput,
+  routineExecutables,
   type RoutineStartInput,
   type RoutineStartResult,
   RoutineError,
@@ -45,6 +48,10 @@ export class RoutineService extends Context.Service<
     readonly complete: (
       input: RoutineCompleteInput,
     ) => Effect.Effect<RoutineCompleteResult, RoutineError>;
+    readonly revoke: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
+    readonly removeExecutable: (
+      input: RoutineRemoveExecutableInput,
+    ) => Effect.Effect<void, RoutineError>;
     readonly subscribeExecutions: (
       input: RoutineExecutionsInput,
     ) => Stream.Stream<RoutineExecutionsResult, RoutineError>;
@@ -90,11 +97,17 @@ const make = Effect.gen(function* () {
         ),
       );
       const approvals = yield* executor.approvals(input.projectId);
+      const allowlist = yield* executor.allowlist(input.projectId);
       return {
+        allowlist,
         routines: routines.map((routine) => ({
           ...routine,
           approved: routine.hash !== null && approvals.get(routine.id)?.hash === routine.hash,
           approvedDefinition: approvals.get(routine.id)?.definition ?? null,
+          missingExecutables:
+            routine.definition === null
+              ? []
+              : routineExecutables(routine.definition).filter((name) => !allowlist.includes(name)),
         })),
       };
     },
@@ -108,6 +121,8 @@ const make = Effect.gen(function* () {
       executor.cancel(input.executionId),
     ),
     complete: executor.complete,
+    revoke: executor.revoke,
+    removeExecutable: executor.removeExecutable,
     subscribeExecutions: (input) => executor.subscribeExecutions(input.projectId),
     subscribeExecution: (input) => executor.subscribeExecution(input.executionId),
     councilRecords: executor.councilRecords,

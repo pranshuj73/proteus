@@ -1320,6 +1320,14 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:complete",
       tag: WS_METHODS.routinesComplete,
     }),
+    revokeRoutine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:revoke",
+      tag: WS_METHODS.routinesRevoke,
+    }),
+    removeRoutineExecutable: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:remove-executable",
+      tag: WS_METHODS.routinesRemoveExecutable,
+    }),
     approveRoutine: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:routines:approve",
       tag: WS_METHODS.routinesApprove,

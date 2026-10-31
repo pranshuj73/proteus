@@ -11,6 +11,7 @@ import {
   ThreadId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthRoutineApproveScope,
   AuthSourceControlWriteScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
@@ -264,6 +265,17 @@ it.effect("requires task permission before attaching a prepared worktree to a th
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+it("routine trust changes need the approve scope, not operate", () => {
+  for (const tag of [
+    WS_METHODS.routinesApprove,
+    WS_METHODS.routinesRevoke,
+    WS_METHODS.routinesRemoveExecutable,
+  ]) {
+    expect(RPC_REQUIRED_SCOPES[tag]).toBe(AuthRoutineApproveScope);
+  }
+  expect(RPC_REQUIRED_SCOPES[WS_METHODS.routinesStart]).toBe(AuthOrchestrationOperateScope);
+});
 
 describe("thread context authorization", () => {
   const group = WsRpcGroup.omit(

@@ -45,6 +45,7 @@ export const AuthAccessReadScope = "access:read" as const;
 export const AuthAccessWriteScope = "access:write" as const;
 export const AuthRelayReadScope = "relay:read" as const;
 export const AuthRelayWriteScope = "relay:write" as const;
+export const AuthRoutineApproveScope = "routine:approve" as const;
 export const AuthEnvironmentScope = Schema.Literals([
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
@@ -63,6 +64,7 @@ export const AuthEnvironmentScope = Schema.Literals([
   AuthAccessWriteScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  AuthRoutineApproveScope,
 ]);
 export type AuthEnvironmentScope = typeof AuthEnvironmentScope.Type;
 export const AuthEnvironmentScopes = Schema.Array(AuthEnvironmentScope);
@@ -105,6 +107,7 @@ const legacyParents: Partial<Record<AuthEnvironmentScope, AuthEnvironmentScope>>
   [AuthPreviewOperateScope]: AuthOrchestrationOperateScope,
   [AuthSourceControlWriteScope]: AuthOrchestrationOperateScope,
   [AuthFilesystemWriteScope]: AuthOrchestrationOperateScope,
+  [AuthRoutineApproveScope]: AuthOrchestrationOperateScope,
   [AuthTerminalReadScope]: AuthTerminalOperateScope,
 };
 
@@ -163,6 +166,7 @@ export const AuthStandardClientScopes = [
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthRelayWriteScope,
+  AuthRoutineApproveScope,
 ] as const;
 
 export const AuthTokenExchangeGrantType =

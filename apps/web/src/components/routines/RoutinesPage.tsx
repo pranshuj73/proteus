@@ -15,6 +15,7 @@ import { useState } from "react";
 import { useProjects } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -101,12 +102,94 @@ function RoutineDiffSummary({
   );
 }
 
+function RoutineApprovalReview({
+  definition,
+  missingExecutables,
+}: {
+  readonly definition: RoutineDefinition;
+  readonly missingExecutables: ReadonlyArray<string>;
+}) {
+  const commands = definition.steps.filter((step) => step.kind === "command");
+  const actions = definition.steps.filter((step) => step.kind === "action");
+  const council = definition.council;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border bg-muted/40 p-2 text-2xs">
+      {commands.length === 0 ? (
+        <span className="text-muted-foreground">No command steps.</span>
+      ) : (
+        commands.map((step) => (
+          <span key={step.id} className="break-all font-mono text-foreground">
+            {step.id}: {step.argv.join(" ")}
+            {step.cwd === undefined ? "" : ` (in ${step.cwd})`}
+          </span>
+        ))
+      )}
+      {actions.map((step) => (
+        <span key={step.id} className="font-mono text-foreground">
+          {step.id}: {step.action}
+        </span>
+      ))}
+      <span className="text-muted-foreground">
+        Council model: {council?.model ?? "chosen automatically"}
+      </span>
+      {missingExecutables.length === 0 ? null : (
+        <span className="text-foreground">
+          Approving adds to the project allowlist: {missingExecutables.join(", ")}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function RoutineAllowlist({
+  environmentId,
+  projectId,
+  executables,
+  onChanged,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly executables: ReadonlyArray<string>;
+  readonly onChanged: () => void;
+}) {
+  const canEdit = useAtomValue(
+    serverEnvironment.removeRoutineExecutable.permissionAtom(environmentId),
+  );
+  const remove = useAtomCommand(serverEnvironment.removeRoutineExecutable, {
+    label: "routine remove executable",
+  });
+  if (executables.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+      <span>Allowed executables:</span>
+      {executables.map((executable) => (
+        <Button
+          key={executable}
+          size="compact"
+          variant="ghost"
+          disabled={!canEdit}
+          title="Remove from allowlist"
+          onClick={() =>
+            void remove({ environmentId, input: { projectId, executable } }).then(onChanged)
+          }
+        >
+          {executable} ×
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 function RoutineApproveButton({
   environmentId,
   projectId,
   routineId,
+  allowExecutables,
+  disabled,
   onApproved,
 }: {
+  readonly allowExecutables: ReadonlyArray<string>;
+  readonly disabled: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
   readonly routineId: RoutineSummary["id"];
@@ -117,7 +200,10 @@ function RoutineApproveButton({
   const run = async () => {
     if (busy) return;
     setBusy(true);
-    const result = await approve({ environmentId, input: { projectId, routineId } });
+    const result = await approve({
+      environmentId,
+      input: { projectId, routineId, allowExecutables },
+    });
     setBusy(false);
     if (result._tag === "Success") {
       onApproved();
@@ -134,7 +220,7 @@ function RoutineApproveButton({
     }
   };
   return (
-    <Button size="compact" variant="outline" disabled={busy} onClick={() => void run()}>
+    <Button size="compact" variant="outline" disabled={busy || disabled} onClick={() => void run()}>
       {busy ? "Approving…" : "Approve"}
     </Button>
   );
@@ -157,6 +243,10 @@ function RoutineCard({
 }) {
   const valid = summary.issues.length === 0;
   const name = summary.definition?.name ?? summary.id;
+  const [reviewed, setReviewed] = useState(false);
+  const canApprove = useAtomValue(serverEnvironment.approveRoutine.permissionAtom(environmentId));
+  const revoke = useAtomCommand(serverEnvironment.revokeRoutine, { label: "routine revoke" });
+
   return (
     <section className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex items-start justify-between gap-3">
@@ -169,12 +259,32 @@ function RoutineCard({
             {valid ? "Valid" : "Invalid"}
           </Badge>
           {valid && !summary.approved ? (
-            <RoutineApproveButton
-              environmentId={environmentId}
-              projectId={projectId}
-              routineId={summary.id}
-              onApproved={onApproved}
-            />
+            <>
+              <Button size="compact" variant="ghost" onClick={() => setReviewed(true)}>
+                Review
+              </Button>
+              <RoutineApproveButton
+                environmentId={environmentId}
+                projectId={projectId}
+                routineId={summary.id}
+                allowExecutables={summary.missingExecutables}
+                disabled={!reviewed || !canApprove}
+                onApproved={onApproved}
+              />
+            </>
+          ) : null}
+          {summary.approved && canApprove ? (
+            <Button
+              size="compact"
+              variant="ghost"
+              onClick={() =>
+                void revoke({ environmentId, input: { projectId, routineId: summary.id } }).then(
+                  onApproved,
+                )
+              }
+            >
+              Revoke
+            </Button>
           ) : null}
           <RoutineRunDialog
             environmentId={environmentId}
@@ -187,6 +297,12 @@ function RoutineCard({
         </div>
       </div>
       {valid ? null : <RoutineIssueList issues={summary.issues} />}
+      {reviewed && valid && !summary.approved && summary.definition !== null ? (
+        <RoutineApprovalReview
+          definition={summary.definition}
+          missingExecutables={summary.missingExecutables}
+        />
+      ) : null}
       {valid &&
       !summary.approved &&
       summary.definition !== null &&
@@ -286,6 +402,12 @@ export function RoutinesPage() {
               </p>
             ) : (
               <div className="flex flex-col gap-4">
+                <RoutineAllowlist
+                  environmentId={selected.environmentId}
+                  projectId={selected.id}
+                  executables={routinesQuery.data?.allowlist ?? []}
+                  onChanged={routinesQuery.refresh}
+                />
                 {routines.map((summary) => (
                   <RoutineCard
                     key={summary.id}

@@ -101,6 +101,22 @@ export class ExecutionRepository extends Context.Service<
       readonly definition: RoutineDefinition;
       readonly approvedAt: string;
     }) => Effect.Effect<void, RoutineError>;
+    readonly deleteApproval: (input: {
+      readonly projectId: ProjectId;
+      readonly routineId: string;
+    }) => Effect.Effect<void, RoutineError>;
+    readonly listAllowlist: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<string>, RoutineError>;
+    readonly addAllowlist: (input: {
+      readonly projectId: ProjectId;
+      readonly executable: string;
+      readonly addedAt: string;
+    }) => Effect.Effect<void, RoutineError>;
+    readonly removeAllowlist: (input: {
+      readonly projectId: ProjectId;
+      readonly executable: string;
+    }) => Effect.Effect<void, RoutineError>;
   }
 >()("t3/routines/ExecutionRepository") {}
 
@@ -305,6 +321,43 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => repositoryError("Could not write a routine approval.", cause)),
     );
 
+  const deleteApproval: ExecutionRepository["Service"]["deleteApproval"] = (input) =>
+    sql`
+      DELETE FROM routine_approvals
+      WHERE project_id = ${input.projectId} AND routine_id = ${input.routineId}
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not revoke a routine approval.", cause)),
+    );
+
+  const listAllowlist: ExecutionRepository["Service"]["listAllowlist"] = (projectId) =>
+    sql<{ readonly executable: string }>`
+      SELECT executable FROM routine_allowlist
+      WHERE project_id = ${projectId} ORDER BY executable
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.map((rows) => rows.map((row) => row.executable)),
+      Effect.mapError((cause) => repositoryError("Could not list the routine allowlist.", cause)),
+    );
+
+  const addAllowlist: ExecutionRepository["Service"]["addAllowlist"] = (input) =>
+    sql`
+      INSERT OR IGNORE INTO routine_allowlist (project_id, executable, added_at)
+      VALUES (${input.projectId}, ${input.executable}, ${input.addedAt})
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not update the routine allowlist.", cause)),
+    );
+
+  const removeAllowlist: ExecutionRepository["Service"]["removeAllowlist"] = (input) =>
+    sql`
+      DELETE FROM routine_allowlist
+      WHERE project_id = ${input.projectId} AND executable = ${input.executable}
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not update the routine allowlist.", cause)),
+    );
+
   const insertCouncilRecord: ExecutionRepository["Service"]["insertCouncilRecord"] = (record) =>
     sql`
       INSERT INTO routine_council_records (
@@ -398,6 +451,10 @@ const make = Effect.gen(function* () {
     listRunning,
     listApprovals,
     setApproval,
+    deleteApproval,
+    listAllowlist,
+    addAllowlist,
+    removeAllowlist,
     listExecutions,
     getExecution,
     listSteps,

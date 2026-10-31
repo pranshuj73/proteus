@@ -12,6 +12,7 @@ import {
   AuthProvidersManageScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  AuthRoutineApproveScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,
@@ -72,6 +73,11 @@ export const AUTH_SCOPE_OPTIONS: ReadonlyArray<{
     scope: AuthSourceControlWriteScope,
     title: "Change source control",
     description: "Commit, push, manage branches and repositories, and change pull requests.",
+  },
+  {
+    scope: AuthRoutineApproveScope,
+    title: "Approve routines",
+    description: "Approve routines to run and choose which executables they may use.",
   },
   {
     scope: AuthFilesystemReadScope,
