@@ -65,6 +65,13 @@ export const worktreeRisks = Effect.fn("RoutineParallel.worktreeRisks")(function
   ];
 });
 
+/** The resolution to judge: the staged diff, or the commit if the resolver already committed. */
+export const resolutionDiff = Effect.fn("RoutineParallel.resolutionDiff")(function* (cwd: string) {
+  const staged = yield* git(cwd, ["diff", "--cached"]);
+  if (staged.output.trim() !== "") return staged.output;
+  return (yield* git(cwd, ["show", "HEAD"])).output;
+});
+
 export const abortMerge = Effect.fn("RoutineParallel.abortMerge")(function* (cwd: string) {
   yield* git(cwd, ["merge", "--abort"]);
 });
