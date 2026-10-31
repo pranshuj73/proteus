@@ -65,6 +65,16 @@ export class ExecutionRepository extends Context.Service<
     readonly insertExecution: (execution: RoutineExecution) => Effect.Effect<void, RoutineError>;
     readonly updateExecution: (execution: RoutineExecution) => Effect.Effect<void, RoutineError>;
     readonly upsertStep: (step: ExecutionStepRecord) => Effect.Effect<void, RoutineError>;
+    readonly listRunning: () => Effect.Effect<RoutineExecution[], RoutineError>;
+    readonly listApprovedHashes: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
+    readonly setApproval: (input: {
+      readonly projectId: ProjectId;
+      readonly routineId: string;
+      readonly hash: string;
+      readonly approvedAt: string;
+    }) => Effect.Effect<void, RoutineError>;
   }
 >()("t3/routines/ExecutionRepository") {}
 
@@ -212,7 +222,40 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => repositoryError("Could not write a routine step.", cause)),
     );
 
+  const listRunning: ExecutionRepository["Service"]["listRunning"] = () =>
+    sql<ExecutionRow>`
+      SELECT execution_id, project_id, routine_id, routine_hash, definition_json, brief, status,
+             worktree_path, branch, error, created_at, updated_at, finished_at
+      FROM routine_executions
+      WHERE status = 'running'
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.mapError((cause) => repositoryError("Could not list running executions.", cause)),
+      Effect.flatMap((rows) => Effect.forEach(rows, toExecution)),
+    );
+
+  const listApprovedHashes: ExecutionRepository["Service"]["listApprovedHashes"] = (projectId) =>
+    sql<{ readonly routine_id: string; readonly approved_hash: string }>`
+      SELECT routine_id, approved_hash FROM routine_approvals WHERE project_id = ${projectId}
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.mapError((cause) => repositoryError("Could not list routine approvals.", cause)),
+      Effect.map((rows) => new Map(rows.map((row) => [row.routine_id, row.approved_hash]))),
+    );
+
+  const setApproval: ExecutionRepository["Service"]["setApproval"] = (input) =>
+    sql`
+      INSERT OR REPLACE INTO routine_approvals (project_id, routine_id, approved_hash, approved_at)
+      VALUES (${input.projectId}, ${input.routineId}, ${input.hash}, ${input.approvedAt})
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not write a routine approval.", cause)),
+    );
+
   return ExecutionRepository.of({
+    listRunning,
+    listApprovedHashes,
+    setApproval,
     listExecutions,
     getExecution,
     listSteps,

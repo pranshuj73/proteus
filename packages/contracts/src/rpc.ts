@@ -373,6 +373,8 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import {
+  RoutineApproveInput,
+  RoutineApproveResult,
   RoutineCancelInput,
   RoutineCancelResult,
   RoutineError,
@@ -558,6 +560,7 @@ export const WS_METHODS = {
   routinesList: "routines.list",
   routinesStart: "routines.start",
   routinesCancel: "routines.cancel",
+  routinesApprove: "routines.approve",
   routinesSubscribeExecutions: "routines.subscribeExecutions",
   routinesSubscribeExecution: "routines.subscribeExecution",
 
@@ -1961,6 +1964,12 @@ const WsRoutinesStartRpc = Rpc.make(WS_METHODS.routinesStart, {
   error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
 });
 
+const WsRoutinesApproveRpc = Rpc.make(WS_METHODS.routinesApprove, {
+  payload: RoutineApproveInput,
+  success: RoutineApproveResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+});
+
 const WsRoutinesCancelRpc = Rpc.make(WS_METHODS.routinesCancel, {
   payload: RoutineCancelInput,
   success: RoutineCancelResult,
@@ -2068,6 +2077,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoutinesListRpc,
   WsRoutinesStartRpc,
   WsRoutinesCancelRpc,
+  WsRoutinesApproveRpc,
   WsRoutinesSubscribeExecutionsRpc,
   WsRoutinesSubscribeExecutionRpc,
   WsServerReportClientActivityRpc,

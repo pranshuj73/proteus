@@ -144,6 +144,8 @@ export const RoutineSummary = Schema.Struct({
   definition: Schema.NullOr(RoutineDefinition),
   /** Empty means the routine is valid. */
   issues: Schema.Array(RoutineValidationIssue),
+  /** True when the current hash has been approved to run. */
+  approved: Schema.Boolean,
 });
 export type RoutineSummary = typeof RoutineSummary.Type;
 
@@ -224,6 +226,18 @@ export const RoutineStartResult = Schema.Struct({
   execution: RoutineExecution,
 });
 export type RoutineStartResult = typeof RoutineStartResult.Type;
+
+export const RoutineApproveInput = Schema.Struct({
+  projectId: ProjectId,
+  routineId: RoutineId,
+});
+export type RoutineApproveInput = typeof RoutineApproveInput.Type;
+
+export const RoutineApproveResult = Schema.Struct({
+  routineId: RoutineId,
+  approvedHash: Schema.String,
+});
+export type RoutineApproveResult = typeof RoutineApproveResult.Type;
 
 export const RoutineCancelInput = Schema.Struct({
   executionId: RoutineExecutionId,

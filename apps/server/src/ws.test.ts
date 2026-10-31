@@ -531,6 +531,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
     list: () => Effect.succeed({ routines: [] }),
     start: () => Effect.die("routines.start is unused in ws tests"),
     cancel: () => Effect.die("routines.cancel is unused in ws tests"),
+    approve: () => Effect.die("routines.approve is unused in ws tests"),
     subscribeExecutions: () => Stream.empty,
     subscribeExecution: () => Stream.empty,
   }),

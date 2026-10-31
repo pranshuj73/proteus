@@ -6,9 +6,12 @@ import {
   RoutineExecutionId,
   type RoutineExecutionResult,
   type RoutineExecutionsResult,
+  type RoutineApproveInput,
+  type RoutineApproveResult,
   type RoutineCancelResult,
   type RoutineStartInput,
   type RoutineStartResult,
+  type RoutineId,
   type RoutineStepId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -37,6 +40,8 @@ import {
   runStep,
 } from "./steps/StepRunner.ts";
 
+const RESTART_ERROR = "Interrupted by a server restart";
+
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 const causeMessage = (cause: Cause.Cause<unknown>, fallback: string): string => {
@@ -48,6 +53,12 @@ export class Executor extends Context.Service<
   Executor,
   {
     readonly start: (input: RoutineStartInput) => Effect.Effect<RoutineStartResult, RoutineError>;
+    readonly approve: (
+      input: RoutineApproveInput,
+    ) => Effect.Effect<RoutineApproveResult, RoutineError>;
+    readonly approvedHashes: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
     readonly cancel: (id: RoutineExecutionId) => Effect.Effect<RoutineCancelResult, RoutineError>;
     readonly subscribeExecutions: (
       projectId: ProjectId,
@@ -238,40 +249,69 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  const start: Executor["Service"]["start"] = Effect.fn("Executor.start")(function* (input) {
+  const loadRunnable = Effect.fn("Executor.loadRunnable")(function* (
+    projectId: ProjectId,
+    routineId: RoutineId,
+  ) {
     const project = yield* projectService
-      .getById(input.projectId)
+      .getById(projectId)
       .pipe(
         Effect.mapError(
           (cause) => new RoutineError({ message: "Failed to resolve project for routine.", cause }),
         ),
       );
     if (Option.isNone(project)) {
-      return yield* new RoutineError({ message: `Project ${input.projectId} not found.` });
+      return yield* new RoutineError({ message: `Project ${projectId} not found.` });
     }
     const workspaceRoot = project.value.workspaceRoot;
 
-    const summaries = yield* RoutineStore.list({ workspaceRoot, projectId: input.projectId }).pipe(
+    const summaries = yield* RoutineStore.list({ workspaceRoot, projectId }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.mapError((cause) => new RoutineError({ message: "Failed to read routines.", cause })),
     );
 
-    const summary = summaries.find((candidate) => candidate.id === input.routineId);
+    const summary = summaries.find((candidate) => candidate.id === routineId);
     if (summary === undefined || summary.definition === null || summary.hash === null) {
       return yield* new RoutineError({
-        message: `Routine "${input.routineId}" was not found or could not be parsed.`,
-        routineId: input.routineId,
+        message: `Routine "${routineId}" was not found or could not be parsed.`,
+        routineId,
       });
     }
     if (summary.issues.length > 0) {
       return yield* new RoutineError({
-        message: `Routine "${input.routineId}" has ${summary.issues.length} validation issue(s).`,
+        message: `Routine "${routineId}" has ${summary.issues.length} validation issue(s).`,
+        routineId,
+      });
+    }
+    return { workspaceRoot, definition: summary.definition, hash: summary.hash };
+  });
+
+  const approve: Executor["Service"]["approve"] = Effect.fn("Executor.approve")(function* (input) {
+    const { hash } = yield* loadRunnable(input.projectId, input.routineId);
+    yield* repository.setApproval({
+      projectId: input.projectId,
+      routineId: input.routineId,
+      hash,
+      approvedAt: yield* nowIso,
+    });
+    return { routineId: input.routineId, approvedHash: hash };
+  });
+
+  const start: Executor["Service"]["start"] = Effect.fn("Executor.start")(function* (input) {
+    const { workspaceRoot, definition, hash } = yield* loadRunnable(
+      input.projectId,
+      input.routineId,
+    );
+    const approvals = yield* repository.listApprovedHashes(input.projectId);
+    if (approvals.get(input.routineId) !== hash) {
+      return yield* new RoutineError({
+        message: `Routine "${input.routineId}" must be approved before it can run.`,
         routineId: input.routineId,
       });
     }
 
-    const needsModel = summary.definition.steps.some(
+    const needsModel = definition.steps.some(
       (step) => step.kind === "agent" || step.kind === "skill",
     );
     const modelSelection =
@@ -295,8 +335,8 @@ const make = Effect.gen(function* () {
       id: RoutineExecutionId.make(`routine-execution:${unique}`),
       projectId: input.projectId,
       routineId: input.routineId,
-      routineHash: summary.hash,
-      definition: summary.definition,
+      routineHash: hash,
+      definition,
       brief: input.brief,
       status: "running",
       worktreePath: worktree.worktreePath,
@@ -388,7 +428,39 @@ const make = Effect.gen(function* () {
   const subscribeExecution: Executor["Service"]["subscribeExecution"] = (id) =>
     subscribeTo(readExecution(id));
 
-  return Executor.of({ start, cancel, subscribeExecutions, subscribeExecution });
+  // Fibers do not survive a restart; fail what was left running and keep its worktree.
+  const interrupted = yield* repository.listRunning();
+  for (const execution of interrupted) {
+    const steps = yield* repository.listSteps(execution.id);
+    const finishedAt = yield* nowIso;
+    for (const step of steps) {
+      if (step.status === "running") {
+        yield* persistStep({
+          ...step,
+          executionId: execution.id,
+          status: "failed",
+          error: RESTART_ERROR,
+          finishedAt,
+        });
+      }
+    }
+    yield* persistExecution({
+      ...execution,
+      status: "failed",
+      error: RESTART_ERROR,
+      updatedAt: finishedAt,
+      finishedAt,
+    });
+  }
+
+  return Executor.of({
+    start,
+    approve,
+    approvedHashes: repository.listApprovedHashes,
+    cancel,
+    subscribeExecutions,
+    subscribeExecution,
+  });
 });
 
 export const layer = Layer.effect(Executor, make);

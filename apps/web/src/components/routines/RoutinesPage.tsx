@@ -4,15 +4,23 @@ import type {
   RoutineExecutionId,
   RoutineSummary,
 } from "@t3tools/contracts";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useState } from "react";
 
 import { useProjects } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SidebarInset } from "../ui/sidebar";
+import { stackedThreadToast, toastManager } from "../ui/toast";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { RoutineGraph } from "./RoutineGraph";
 import { NewRoutineButton } from "./NewRoutineButton";
@@ -40,18 +48,59 @@ function RoutineIssueList({ issues }: { readonly issues: RoutineSummary["issues"
   );
 }
 
+function RoutineApproveButton({
+  environmentId,
+  projectId,
+  routineId,
+  onApproved,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly routineId: RoutineSummary["id"];
+  readonly onApproved: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const approve = useAtomCommand(serverEnvironment.approveRoutine, { label: "routine approve" });
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await approve({ environmentId, input: { projectId, routineId } });
+    setBusy(false);
+    if (result._tag === "Success") {
+      onApproved();
+      return;
+    }
+    if (!isAtomCommandInterrupted(result)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not approve routine",
+          description: String(squashAtomCommandFailure(result)),
+        }),
+      );
+    }
+  };
+  return (
+    <Button size="compact" variant="outline" disabled={busy} onClick={() => void run()}>
+      {busy ? "Approving…" : "Approve"}
+    </Button>
+  );
+}
+
 function RoutineCard({
   summary,
   environmentId,
   projectId,
   selectedExecutionId,
   onSelectExecution,
+  onApproved,
 }: {
   readonly summary: RoutineSummary;
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
   readonly selectedExecutionId: RoutineExecutionId | null;
   readonly onSelectExecution: (executionId: RoutineExecutionId) => void;
+  readonly onApproved: () => void;
 }) {
   const valid = summary.issues.length === 0;
   const name = summary.definition?.name ?? summary.id;
@@ -66,12 +115,20 @@ function RoutineCard({
           <Badge variant={valid ? "success" : "destructive"} size="sm">
             {valid ? "Valid" : "Invalid"}
           </Badge>
+          {valid && !summary.approved ? (
+            <RoutineApproveButton
+              environmentId={environmentId}
+              projectId={projectId}
+              routineId={summary.id}
+              onApproved={onApproved}
+            />
+          ) : null}
           <RoutineRunDialog
             environmentId={environmentId}
             projectId={projectId}
             routineId={summary.id}
             routineName={name}
-            disabled={!valid}
+            disabled={!valid || !summary.approved}
             onStarted={onSelectExecution}
           />
         </div>
@@ -178,6 +235,7 @@ export function RoutinesPage() {
                     projectId={selected.id}
                     selectedExecutionId={search.executionId ?? null}
                     onSelectExecution={selectExecution}
+                    onApproved={routinesQuery.refresh}
                   />
                 ))}
               </div>

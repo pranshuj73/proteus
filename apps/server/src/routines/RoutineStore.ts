@@ -132,6 +132,7 @@ function summarizeFile(input: {
       hash: null,
       definition: null,
       issues,
+      approved: false,
     };
   }
 
@@ -145,6 +146,7 @@ function summarizeFile(input: {
       hash: null,
       definition: null,
       issues,
+      approved: false,
     };
   }
 
@@ -157,6 +159,7 @@ function summarizeFile(input: {
     hash: routineHash(canonicalRoutineText(definition)),
     definition,
     issues,
+    approved: false,
   };
 }
 

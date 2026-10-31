@@ -7,12 +7,15 @@ import {
   ProviderInstanceId,
   type RoutineExecutionId,
   type RoutineId,
+  type RoutineError,
+  RoutineStepId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import type { PlatformError } from "effect/PlatformError";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
@@ -38,11 +41,16 @@ interface Fakes {
   readonly stopped?: Array<string>;
   readonly pushed?: boolean;
   readonly launched?: Deferred.Deferred<void>;
+  readonly seed?: Effect.Effect<void, RoutineError, ExecutionRepository.ExecutionRepository>;
 }
 
 const withExecutor = <A, E>(
   fakes: Fakes,
-  body: (executor: Executor["Service"]) => Effect.Effect<A, E>,
+  body: (
+    executor: Executor["Service"],
+    raw: Executor["Service"],
+    rewrite: (routine: unknown) => Effect.Effect<void, PlatformError>,
+  ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -54,6 +62,10 @@ const withExecutor = <A, E>(
       path.join(directory, `${routineId}.json`),
       JSON.stringify(fakes.routine),
     );
+
+    if (fakes.seed !== undefined) {
+      yield* fakes.seed.pipe(Effect.provide(ExecutionRepository.layer));
+    }
 
     const layer = executorLayer.pipe(
       Layer.provide(
@@ -112,7 +124,27 @@ const withExecutor = <A, E>(
         ),
       ),
     );
-    return yield* Executor.pipe(Effect.flatMap(body), Effect.provide(layer));
+    return yield* Executor.pipe(
+      Effect.flatMap((raw) =>
+        body(
+          // Most cases are not about approval, so their start approves the routine first.
+          {
+            ...raw,
+            start: (input) =>
+              raw
+                .approve({ projectId: input.projectId, routineId: input.routineId })
+                .pipe(Effect.andThen(raw.start(input))),
+          },
+          raw,
+          (routine) =>
+            fileSystem.writeFileString(
+              path.join(directory, `${routineId}.json`),
+              JSON.stringify(routine),
+            ),
+        ),
+      ),
+      Effect.provide(layer),
+    );
   }).pipe(
     Effect.scoped,
     Effect.provide(Layer.mergeAll(SqlitePersistence.layerMemory, NodeServices.layer)),
@@ -436,3 +468,111 @@ it.effect("a step with several next steps fails instead of dropping branches", (
       }),
   ),
 );
+
+it.effect("a routine must be approved at its current hash before it can run", () =>
+  withExecutor(
+    {
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "build", kind: "command", argv: ["make"] }],
+      },
+    },
+    (executor, raw) =>
+      Effect.gen(function* () {
+        const input = { projectId, routineId, brief: "" };
+        const refused = yield* raw.start(input).pipe(Effect.flip);
+        assert.include(refused.message, "must be approved");
+
+        const approval = yield* raw.approve({ projectId, routineId });
+        const approvals = yield* raw.approvedHashes(projectId);
+        assert.equal(approvals.get(routineId), approval.approvedHash);
+
+        const { execution } = yield* raw.start(input);
+        assert.equal(execution.routineHash, approval.approvedHash);
+        yield* awaitSettled(executor, execution.id);
+      }),
+  ),
+);
+
+it.effect("an edited routine needs re-approval", () =>
+  withExecutor(
+    {
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "build", kind: "command", argv: ["make"] }],
+      },
+    },
+    (_executor, raw, rewrite) =>
+      Effect.gen(function* () {
+        yield* raw.approve({ projectId, routineId });
+        yield* rewrite({
+          version: 1,
+          name: "demo",
+          steps: [{ id: "build", kind: "command", argv: ["make", "all"] }],
+        });
+        const refused = yield* raw.start({ projectId, routineId, brief: "" }).pipe(Effect.flip);
+        assert.include(refused.message, "must be approved");
+      }),
+  ),
+);
+
+it.effect("executions left running by a restart are failed and keep their worktree", () => {
+  const seededId = "routine-execution:seeded" as RoutineExecutionId;
+  return withExecutor(
+    {
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "build", kind: "command", argv: ["make"] }],
+      },
+      seed: Effect.gen(function* () {
+        const repository = yield* ExecutionRepository.ExecutionRepository;
+        const at = "2026-01-01T00:00:00.000Z";
+        yield* repository.insertExecution({
+          id: seededId,
+          projectId,
+          routineId,
+          routineHash: "hash",
+          definition: {
+            version: 1,
+            name: "demo",
+            steps: [{ id: RoutineStepId.make("build"), kind: "command", argv: ["make"] }],
+          },
+          brief: "",
+          status: "running",
+          worktreePath: "/worktrees/kept",
+          branch: "routine/kept",
+          error: null,
+          createdAt: at,
+          updatedAt: at,
+          finishedAt: null,
+        });
+        yield* repository.upsertStep({
+          executionId: seededId,
+          stepId: RoutineStepId.make("build"),
+          attempt: 1,
+          status: "running",
+          verdict: null,
+          outputExcerpt: null,
+          threadId: null,
+          error: null,
+          startedAt: at,
+          finishedAt: null,
+        });
+      }),
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const snapshot = yield* executor
+          .subscribeExecution(seededId)
+          .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+        assert.equal(snapshot.execution.status, "failed");
+        assert.equal(snapshot.execution.error, "Interrupted by a server restart");
+        assert.equal(snapshot.execution.worktreePath, "/worktrees/kept");
+        assert.equal(snapshot.steps[0]?.status, "failed");
+        assert.equal(snapshot.steps[0]?.error, "Interrupted by a server restart");
+      }),
+  );
+});

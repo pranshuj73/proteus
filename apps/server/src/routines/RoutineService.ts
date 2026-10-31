@@ -5,6 +5,8 @@ import {
   type RoutineExecutionsResult,
   type RoutineListInput,
   type RoutineListResult,
+  type RoutineApproveInput,
+  type RoutineApproveResult,
   type RoutineCancelInput,
   type RoutineCancelResult,
   type RoutineStartInput,
@@ -28,6 +30,9 @@ export class RoutineService extends Context.Service<
   {
     readonly list: (input: RoutineListInput) => Effect.Effect<RoutineListResult, RoutineError>;
     readonly start: (input: RoutineStartInput) => Effect.Effect<RoutineStartResult, RoutineError>;
+    readonly approve: (
+      input: RoutineApproveInput,
+    ) => Effect.Effect<RoutineApproveResult, RoutineError>;
     readonly cancel: (
       input: RoutineCancelInput,
     ) => Effect.Effect<RoutineCancelResult, RoutineError>;
@@ -69,13 +74,20 @@ const make = Effect.gen(function* () {
           (cause) => new RoutineError({ message: "Failed to read routines.", cause }),
         ),
       );
-      return { routines };
+      const approvals = yield* executor.approvedHashes(input.projectId);
+      return {
+        routines: routines.map((routine) => ({
+          ...routine,
+          approved: routine.hash !== null && approvals.get(routine.id) === routine.hash,
+        })),
+      };
     },
   );
 
   return RoutineService.of({
     list,
     start: executor.start,
+    approve: executor.approve,
     cancel: Effect.fn("RoutineService.cancel")((input: RoutineCancelInput) =>
       executor.cancel(input.executionId),
     ),

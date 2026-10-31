@@ -1308,6 +1308,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:cancel",
       tag: WS_METHODS.routinesCancel,
     }),
+    approveRoutine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:approve",
+      tag: WS_METHODS.routinesApprove,
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,

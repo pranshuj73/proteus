@@ -2145,6 +2145,7 @@ export const layerWsRpc = (
         [WS_METHODS.routinesList]: (input) => routines.list(input),
         [WS_METHODS.routinesStart]: (input) => routines.start(input),
         [WS_METHODS.routinesCancel]: (input) => routines.cancel(input),
+        [WS_METHODS.routinesApprove]: (input) => routines.approve(input),
         [WS_METHODS.routinesSubscribeExecutions]: (input) => routines.subscribeExecutions(input),
         [WS_METHODS.routinesSubscribeExecution]: (input) => routines.subscribeExecution(input),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
