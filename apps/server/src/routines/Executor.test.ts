@@ -30,6 +30,7 @@ import { RoutineProcessRunner } from "./adapters/process.ts";
 import { RoutineThreadRunner } from "./adapters/threads.ts";
 import * as ExecutionRepository from "./ExecutionRepository.ts";
 import { RoutineSkillInstaller } from "./steps/preflight.ts";
+import { skillDrift } from "./skills.ts";
 import { Executor, layer as executorLayer } from "./Executor.ts";
 
 const projectId = ProjectId.make("routine-project");
@@ -909,6 +910,39 @@ it.effect("the allowlist gates approval and start, and revoke blocks the next ru
       }),
   ),
 );
+
+it.effect("a failed skill preflight removes the worktree", () => {
+  const gitCalls: Array<string> = [];
+  return withExecutor(
+    {
+      gitCalls,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "s", kind: "skill", skill: "local", verdict: { labels: ["ok"] } }],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const failed = yield* executor.start({ projectId, routineId, brief: "" }).pipe(Effect.flip);
+        assert.include(failed.message, "preflight");
+        assert.include(gitCalls, "remove /worktrees/routine");
+      }),
+  );
+});
+
+it("skill drift flags only changed approved skills", () => {
+  assert.deepEqual(
+    skillDrift(
+      { a: "1", b: "2", c: "3" },
+      new Map([
+        ["a", "1"],
+        ["b", "x"],
+      ]),
+    ),
+    ["b"],
+  );
+});
 
 it.effect("an edited routine needs re-approval", () =>
   withExecutor(

@@ -84,6 +84,7 @@ import Migration0078 from "./Migrations/078_RoutineCouncil.ts";
 import Migration0079 from "./Migrations/079_RoutineApprovedDefinition.ts";
 import Migration0080 from "./Migrations/080_RoutineAllowlist.ts";
 import Migration0081 from "./Migrations/081_RoutineWalkFrontiers.ts";
+import Migration0082 from "./Migrations/082_RoutineApprovedSkills.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -168,6 +169,7 @@ const migrationEntries = [
   [79, "RoutineApprovedDefinition", Migration0079],
   [80, "RoutineAllowlist", Migration0080],
   [81, "RoutineWalkFrontiers", Migration0081],
+  [82, "RoutineApprovedSkills", Migration0082],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

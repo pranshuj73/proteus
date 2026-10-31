@@ -104,10 +104,15 @@ export class ExecutionRepository extends Context.Service<
     ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
     readonly listRunning: () => Effect.Effect<RoutineExecution[], RoutineError>;
     /** Keyed by routine id; the definition is null for approvals made before it was kept. */
-    readonly listApprovals: (
-      projectId: ProjectId,
-    ) => Effect.Effect<
-      ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
+    readonly listApprovals: (projectId: ProjectId) => Effect.Effect<
+      ReadonlyMap<
+        string,
+        {
+          readonly hash: string;
+          readonly definition: RoutineDefinition | null;
+          readonly skills: Readonly<Record<string, string>>;
+        }
+      >,
       RoutineError
     >;
     readonly saveFrontier: (
@@ -123,6 +128,7 @@ export class ExecutionRepository extends Context.Service<
       readonly routineId: string;
       readonly hash: string;
       readonly definition: RoutineDefinition;
+      readonly skills?: Readonly<Record<string, string>>;
       readonly approvedAt: string;
     }) => Effect.Effect<void, RoutineError>;
     readonly deleteApproval: (input: {
@@ -146,6 +152,9 @@ export class ExecutionRepository extends Context.Service<
 
 const decodeDefinitionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeDefinitionJson = Schema.encodeSync(Schema.fromJsonString(RoutineDefinition));
+const decodeSkills = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+);
 const decodeDefinition = Schema.decodeUnknownEffect(RoutineDefinition);
 const decodeExecution = Schema.decodeUnknownEffect(RoutineExecution);
 const decodeCouncilRecord = Schema.decodeUnknownEffect(RoutineCouncilRecord);
@@ -339,8 +348,9 @@ const make = Effect.gen(function* () {
       readonly routine_id: string;
       readonly approved_hash: string;
       readonly approved_definition_json: string | null;
+      readonly approved_skills_json: string | null;
     }>`
-      SELECT routine_id, approved_hash, approved_definition_json
+      SELECT routine_id, approved_hash, approved_definition_json, approved_skills_json
       FROM routine_approvals WHERE project_id = ${projectId}
     `.pipe(
       NodeSqliteClient.readOnly,
@@ -355,7 +365,15 @@ const make = Effect.gen(function* () {
               )
           ).pipe(
             Effect.map(
-              (definition) => [row.routine_id, { hash: row.approved_hash, definition }] as const,
+              (definition) =>
+                [
+                  row.routine_id,
+                  {
+                    hash: row.approved_hash,
+                    definition,
+                    skills: decodeSkills(row.approved_skills_json ?? "{}"),
+                  },
+                ] as const,
             ),
           ),
         ),
@@ -366,11 +384,13 @@ const make = Effect.gen(function* () {
   const setApproval: ExecutionRepository["Service"]["setApproval"] = (input) =>
     sql`
       INSERT OR REPLACE INTO routine_approvals (
-        project_id, routine_id, approved_hash, approved_definition_json, approved_at
+        project_id, routine_id, approved_hash, approved_definition_json, approved_skills_json,
+        approved_at
       )
       VALUES (
         ${input.projectId}, ${input.routineId}, ${input.hash},
-        ${encodeDefinitionJson(input.definition)}, ${input.approvedAt}
+        ${encodeDefinitionJson(input.definition)}, ${JSON.stringify(input.skills ?? {})},
+        ${input.approvedAt}
       )
     `.pipe(
       Effect.asVoid,

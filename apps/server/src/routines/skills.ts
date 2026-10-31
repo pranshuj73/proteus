@@ -100,6 +100,15 @@ export const hashSkillFolder = Effect.fn("RoutineSkills.hashFolder")(function* (
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 });
 
+/** Skills whose folder no longer matches the hash pinned at approval. */
+export const skillDrift = (
+  approved: Readonly<Record<string, string>>,
+  actual: ReadonlyMap<string, string>,
+): ReadonlyArray<string> =>
+  Object.entries(approved)
+    .filter(([name, hash]) => actual.has(name) && actual.get(name) !== hash)
+    .map(([name]) => name);
+
 export interface InstalledSkill {
   readonly name: string;
   readonly description: string;

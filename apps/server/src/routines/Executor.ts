@@ -55,6 +55,7 @@ import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/threads.ts";
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
 import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
+import { SKILLS_DIR, hashSkillFolder, referencedSkills, skillDrift } from "./skills.ts";
 import * as RoutineStore from "./RoutineStore.ts";
 import {
   checkpoint,
@@ -121,10 +122,15 @@ export class Executor extends Context.Service<
     readonly approve: (
       input: RoutineApproveInput,
     ) => Effect.Effect<RoutineApproveResult, RoutineError>;
-    readonly approvals: (
-      projectId: ProjectId,
-    ) => Effect.Effect<
-      ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
+    readonly approvals: (projectId: ProjectId) => Effect.Effect<
+      ReadonlyMap<
+        string,
+        {
+          readonly hash: string;
+          readonly definition: RoutineDefinition | null;
+          readonly skills: Readonly<Record<string, string>>;
+        }
+      >,
       RoutineError
     >;
     readonly control: (input: RoutineControlInput) => Effect.Effect<void, RoutineError>;
@@ -776,7 +782,24 @@ const make = Effect.gen(function* () {
   });
 
   const approve: Executor["Service"]["approve"] = Effect.fn("Executor.approve")(function* (input) {
-    const { hash, definition } = yield* loadRunnable(input.projectId, input.routineId);
+    const { hash, definition, workspaceRoot } = yield* loadRunnable(
+      input.projectId,
+      input.routineId,
+    );
+    const skills: Record<string, string> = {};
+    for (const ref of referencedSkills(definition)) {
+      const dir = path.join(workspaceRoot, SKILLS_DIR, ref.name);
+      const present = yield* fileSystem.exists(dir).pipe(Effect.orElseSucceed(() => false));
+      if (!present) continue;
+      skills[ref.name] = yield* hashSkillFolder(dir).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.mapError(
+          (cause) => new RoutineError({ message: `Cannot hash skill "${ref.name}".`, cause }),
+        ),
+      );
+    }
     const allowed = new Set([
       ...(yield* repository.listAllowlist(input.projectId)),
       ...(input.allowExecutables ?? []),
@@ -797,6 +820,7 @@ const make = Effect.gen(function* () {
       routineId: input.routineId,
       hash,
       definition,
+      skills,
       approvedAt: yield* nowIso,
     });
     return { routineId: input.routineId, approvedHash: hash };
@@ -844,7 +868,10 @@ const make = Effect.gen(function* () {
       baseRef: "HEAD",
       branch: `routine/${input.routineId}-${unique.slice(0, 8)}`,
     });
-    yield* runSkillPreflight({
+    const removeWorktree = git
+      .removeWorktree({ workspaceRoot, worktreePath: worktree.worktreePath })
+      .pipe(Effect.ignore);
+    const skillHashes = yield* runSkillPreflight({
       worktreePath: worktree.worktreePath,
       definition,
       providers: modelSelection === undefined ? [] : [modelSelection.instanceId],
@@ -860,7 +887,16 @@ const make = Effect.gen(function* () {
             routineId: input.routineId,
           }),
       ),
+      Effect.tapError(() => removeWorktree),
     );
+    const drifted = skillDrift(approvals.get(input.routineId)?.skills ?? {}, skillHashes);
+    if (drifted.length > 0) {
+      yield* removeWorktree;
+      return yield* new RoutineError({
+        message: `Skills changed since approval: ${drifted.join(", ")}. Approve the routine again.`,
+        routineId: input.routineId,
+      });
+    }
     const createdAt = yield* nowIso;
     const execution: RoutineExecution = {
       id: RoutineExecutionId.make(`routine-execution:${unique}`),
