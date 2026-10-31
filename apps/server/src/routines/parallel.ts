@@ -26,6 +26,16 @@ export const commitAll = Effect.fn("RoutineParallel.commitAll")(function* (
   yield* git(cwd, ["commit", "-m", message]);
 });
 
+/** What deleting a worktree would lose: uncommitted changes and commits on no remote. */
+export const worktreeRisks = Effect.fn("RoutineParallel.worktreeRisks")(function* (cwd: string) {
+  const status = yield* git(cwd, ["status", "--porcelain"]);
+  const unpushed = yield* git(cwd, ["log", "--oneline", "HEAD", "--not", "--remotes"]);
+  return [
+    ...(status.output.trim() === "" ? [] : ["uncommitted changes"]),
+    ...(unpushed.output.trim() === "" ? [] : ["unpushed commits"]),
+  ];
+});
+
 /** Merges a branch into the worktree's; a conflict is aborted and reported by file. */
 export const mergeBranch = Effect.fn("RoutineParallel.mergeBranch")(function* (
   cwd: string,

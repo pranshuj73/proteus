@@ -101,6 +101,9 @@ export function RoutineExecutionView({
 }) {
   const [cancelling, setCancelling] = useState(false);
   const cancel = useAtomCommand(serverEnvironment.cancelRoutine, { label: "routine cancel" });
+  const [completing, setCompleting] = useState(false);
+  const [completeBlocker, setCompleteBlocker] = useState<string | null>(null);
+  const complete = useAtomCommand(serverEnvironment.completeRoutine, { label: "routine complete" });
   const executionQuery = useEnvironmentQuery(
     serverEnvironment.routineExecution({ environmentId, input: { executionId } }),
   );
@@ -132,6 +135,18 @@ export function RoutineExecutionView({
     }
   };
 
+  const completeRun = async (discardWork: boolean) => {
+    if (completing) return;
+    setCompleting(true);
+    const result = await complete({ environmentId, input: { executionId, discardWork } });
+    setCompleting(false);
+    if (result._tag === "Success") {
+      setCompleteBlocker(null);
+    } else if (!isAtomCommandInterrupted(result)) {
+      setCompleteBlocker(String(squashAtomCommandFailure(result)));
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3 rounded-lg border bg-background p-3 lg:flex-row">
       <div className="flex min-w-0 flex-1 flex-col gap-3">
@@ -150,7 +165,20 @@ export function RoutineExecutionView({
               Cancel
             </Button>
           ) : null}
+          {execution.status === "awaiting_review" ? (
+            <Button
+              size="compact"
+              variant={completeBlocker === null ? "outline" : "destructive"}
+              disabled={completing}
+              onClick={() => void completeRun(completeBlocker !== null)}
+            >
+              {completeBlocker === null ? "Mark complete" : "Delete worktree anyway"}
+            </Button>
+          ) : null}
         </div>
+        {completeBlocker === null ? null : (
+          <p className="text-2xs text-destructive-foreground">{completeBlocker}</p>
+        )}
         {execution.worktreePath === null && execution.branch === null ? null : (
           <div className="flex flex-col gap-0.5 text-2xs text-muted-foreground">
             {execution.worktreePath === null ? null : (

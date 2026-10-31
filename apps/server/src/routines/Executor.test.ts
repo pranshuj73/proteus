@@ -38,6 +38,7 @@ interface Fakes {
   readonly routine: unknown;
   readonly exitCode?: number;
   readonly verdictText?: string;
+  readonly verdictQueue?: Array<string>;
   /** The agent step's thread asks this once; the answers it receives land in `answers`. */
   readonly question?: ReadonlyArray<OrchestrationV2UserInputQuestion>;
   readonly answers?: Array<unknown>;
@@ -164,7 +165,7 @@ const withExecutor = <A, E>(
                 );
                 return {
                   threadId: ThreadId.make("routine-thread"),
-                  verdictText: fakes.verdictText ?? "",
+                  verdictText: fakes.verdictQueue?.shift() ?? fakes.verdictText ?? "",
                 };
               }),
             resolveDefaultModel: () =>
@@ -314,6 +315,73 @@ it.effect("an agent step records the parsed VERDICT line", () =>
         assert.equal(step?.threadId, ThreadId.make("routine-thread"));
       }),
   ),
+);
+
+it.effect(
+  "an invalid verdict re-prompts on the same thread and earlier outputs reach inputs",
+  () => {
+    const seen: Array<string> = [];
+    return withExecutor(
+      {
+        seen,
+        verdictQueue: ["no verdict here", "VERDICT: approved - fine"],
+        routine: {
+          version: 1,
+          name: "demo",
+          steps: [
+            { id: "build", kind: "command", argv: ["make"], next: ["review"] },
+            {
+              id: "review",
+              kind: "agent",
+              purpose: "Review the build",
+              inputs: ["build"],
+              verdict: { labels: ["approved", "changes"] },
+            },
+          ],
+        },
+      },
+      (executor) =>
+        Effect.gen(function* () {
+          const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+          const settled = yield* awaitSettled(executor, execution.id);
+          assert.equal(settled.execution.status, "awaiting_review");
+          assert.equal(settled.steps.at(-1)?.verdict?.label, "approved");
+          const prompts = seen.filter((entry) => entry.includes("VERDICT:"));
+          assert.include(prompts[0] ?? "", "command output");
+          assert.include(prompts[1] ?? "", "no valid verdict");
+        }),
+    );
+  },
+);
+
+it.effect(
+  "mark complete needs confirmation before discarding work, then removes the worktree",
+  () => {
+    const gitCalls: Array<string> = [];
+    return withExecutor(
+      {
+        gitCalls,
+        routine: {
+          version: 1,
+          name: "demo",
+          steps: [{ id: "build", kind: "command", argv: ["make"] }],
+        },
+      },
+      (executor) =>
+        Effect.gen(function* () {
+          const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+          yield* awaitSettled(executor, execution.id);
+          const blocked = yield* Effect.flip(executor.complete({ executionId: execution.id }));
+          assert.include(blocked.message, "uncommitted changes");
+          const { execution: done } = yield* executor.complete({
+            executionId: execution.id,
+            discardWork: true,
+          });
+          assert.equal(done.status, "completed");
+          assert.include(gitCalls, "remove /worktrees/routine");
+        }),
+    );
+  },
 );
 
 it.effect("an agent step with no valid verdict fails the step and execution", () =>

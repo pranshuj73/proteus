@@ -301,6 +301,18 @@ export const RoutineCancelResult = Schema.Struct({
 });
 export type RoutineCancelResult = typeof RoutineCancelResult.Type;
 
+export const RoutineCompleteInput = Schema.Struct({
+  executionId: RoutineExecutionId,
+  /** Deletes the worktree even with uncommitted changes or unpushed commits. */
+  discardWork: Schema.optional(Schema.Boolean),
+});
+export type RoutineCompleteInput = typeof RoutineCompleteInput.Type;
+
+export const RoutineCompleteResult = Schema.Struct({
+  execution: RoutineExecution,
+});
+export type RoutineCompleteResult = typeof RoutineCompleteResult.Type;
+
 export const RoutineExecutionsInput = Schema.Struct({
   projectId: ProjectId,
 });

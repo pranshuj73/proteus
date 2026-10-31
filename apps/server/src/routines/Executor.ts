@@ -21,6 +21,8 @@ import {
   type RoutineApproveInput,
   type RoutineApproveResult,
   type RoutineCancelResult,
+  type RoutineCompleteInput,
+  type RoutineCompleteResult,
   type RoutineStartInput,
   type RoutineStartResult,
   type RoutineId,
@@ -46,7 +48,7 @@ import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/t
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
 import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
 import * as RoutineStore from "./RoutineStore.ts";
-import { commitAll, mergeBranch } from "./parallel.ts";
+import { commitAll, mergeBranch, worktreeRisks } from "./parallel.ts";
 import { attemptLimit, nextSteps, resolveReady } from "./routing.ts";
 import {
   buildCouncilPrompt,
@@ -91,6 +93,9 @@ export class Executor extends Context.Service<
       RoutineError
     >;
     readonly cancel: (id: RoutineExecutionId) => Effect.Effect<RoutineCancelResult, RoutineError>;
+    readonly complete: (
+      input: RoutineCompleteInput,
+    ) => Effect.Effect<RoutineCompleteResult, RoutineError>;
     readonly subscribeExecutions: (
       projectId: ProjectId,
     ) => Stream.Stream<RoutineExecutionsResult, RoutineError>;
@@ -300,6 +305,7 @@ const make = Effect.gen(function* () {
       };
 
       const attempts = new Map<RoutineStepId, number>();
+      const outputs = new Map<RoutineStepId, string>();
 
       interface StepRun {
         readonly step: RoutineStep;
@@ -364,6 +370,10 @@ const make = Effect.gen(function* () {
             return yield* runStep(step, {
               ...stepContext,
               workspaceStrategy: strategy,
+              inputs: (step.inputs ?? []).flatMap((stepId) => {
+                const output = outputs.get(stepId);
+                return output === undefined ? [] : [{ stepId, output }];
+              }),
               onThreadLaunched: (threadId) => persistStep({ ...running, threadId }),
               ...(modelSelection === undefined
                 ? {}
@@ -375,6 +385,7 @@ const make = Effect.gen(function* () {
         );
         const finishedAt = yield* nowIso;
         const result = Exit.isSuccess(outcome) ? outcome.value : undefined;
+        if (result?.outputExcerpt !== undefined) outputs.set(step.id, result.outputExcerpt);
         // A command's `fail` verdict only continues the walk when the step routes it explicitly.
         const error = Exit.isFailure(outcome)
           ? causeMessage(outcome.cause, "Step failed unexpectedly.")
@@ -703,6 +714,48 @@ const make = Effect.gen(function* () {
     return { execution: cancelled };
   });
 
+  const complete: Executor["Service"]["complete"] = Effect.fn("Executor.complete")(
+    function* (input) {
+      const { execution } = yield* readExecution(input.executionId);
+      if (execution.status !== "awaiting_review") {
+        return yield* new RoutineError({
+          message: `Routine execution ${input.executionId} is not awaiting review.`,
+        });
+      }
+      if (execution.worktreePath !== null) {
+        const risks = yield* worktreeRisks(execution.worktreePath).pipe(Effect.provide(stepEnv));
+        if (risks.length > 0 && input.discardWork !== true) {
+          return yield* new RoutineError({
+            message: `The worktree has ${risks.join(" and ")}.`,
+          });
+        }
+        const project = yield* projectService
+          .getById(execution.projectId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new RoutineError({ message: "Failed to resolve project.", cause }),
+            ),
+          );
+        if (Option.isNone(project)) {
+          return yield* new RoutineError({ message: `Project ${execution.projectId} not found.` });
+        }
+        yield* git.removeWorktree({
+          workspaceRoot: project.value.workspaceRoot,
+          worktreePath: execution.worktreePath,
+        });
+      }
+      const finishedAt = yield* nowIso;
+      const completed: RoutineExecution = {
+        ...execution,
+        status: "completed",
+        updatedAt: finishedAt,
+        finishedAt,
+      };
+      yield* persistExecution(completed);
+      return { execution: completed };
+    },
+  );
+
   const readExecution = Effect.fn("Executor.readExecution")(function* (id: RoutineExecutionId) {
     const execution = yield* repository.getExecution(id);
     if (Option.isNone(execution)) {
@@ -806,6 +859,7 @@ const make = Effect.gen(function* () {
     approve,
     approvals: repository.listApprovals,
     cancel,
+    complete,
     subscribeExecutions,
     subscribeExecution,
     councilRecords,

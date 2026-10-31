@@ -1316,6 +1316,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:cancel",
       tag: WS_METHODS.routinesCancel,
     }),
+    completeRoutine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:complete",
+      tag: WS_METHODS.routinesComplete,
+    }),
     approveRoutine: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:routines:approve",
       tag: WS_METHODS.routinesApprove,

@@ -377,6 +377,8 @@ import {
   RoutineApproveResult,
   RoutineCancelInput,
   RoutineCancelResult,
+  RoutineCompleteInput,
+  RoutineCompleteResult,
   RoutineCouncilRecordsInput,
   RoutineCouncilRecordsResult,
   RoutineError,
@@ -564,6 +566,7 @@ export const WS_METHODS = {
   routinesList: "routines.list",
   routinesStart: "routines.start",
   routinesCancel: "routines.cancel",
+  routinesComplete: "routines.complete",
   routinesApprove: "routines.approve",
   routinesSubscribeExecutions: "routines.subscribeExecutions",
   routinesSubscribeExecution: "routines.subscribeExecution",
@@ -1982,6 +1985,12 @@ const WsRoutinesCancelRpc = Rpc.make(WS_METHODS.routinesCancel, {
   error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
 });
 
+const WsRoutinesCompleteRpc = Rpc.make(WS_METHODS.routinesComplete, {
+  payload: RoutineCompleteInput,
+  success: RoutineCompleteResult,
+  error: RoutineError,
+});
+
 const WsRoutinesCouncilRecordsRpc = Rpc.make(WS_METHODS.routinesCouncilRecords, {
   payload: RoutineCouncilRecordsInput,
   success: RoutineCouncilRecordsResult,
@@ -2095,6 +2104,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoutinesListRpc,
   WsRoutinesStartRpc,
   WsRoutinesCancelRpc,
+  WsRoutinesCompleteRpc,
   WsRoutinesApproveRpc,
   WsRoutinesCouncilRecordsRpc,
   WsRoutinesRegenerateSummaryRpc,

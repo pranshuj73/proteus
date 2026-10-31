@@ -63,6 +63,8 @@ interface RoutineAgentStepInput {
   /** Declines every approval request the thread raises instead of waiting on a human. */
   readonly declineApprovals?: boolean | undefined;
   readonly onLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
+  /** Sends the prompt as a follow-up turn on this thread instead of launching a new one. */
+  readonly continueThreadId?: ThreadId | undefined;
 }
 
 interface RoutineAgentStepResult {
@@ -192,6 +194,39 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const launchStep = (
+    input: RoutineAgentStepInput,
+    ids: {
+      readonly commandId: CommandId;
+      readonly threadId: ThreadId;
+      readonly messageId: MessageId;
+      readonly modelSelection: ModelSelection;
+    },
+  ) =>
+    ThreadMessageIntake.launchThread({
+      commandId: ids.commandId,
+      threadId: ids.threadId,
+      projectId: input.projectId,
+      title: input.title,
+      modelSelection: ids.modelSelection,
+      runtimeMode: input.runtimeMode ?? "full-access",
+      interactionMode: "default",
+      workspaceStrategy: input.workspaceStrategy,
+      initialMessage: { messageId: ids.messageId, text: input.prompt, attachments: [] },
+      createdBy: "agent",
+      creationSource: "server",
+    }).pipe(
+      Effect.provide(launchContext),
+      Effect.mapError(
+        (cause) =>
+          new RoutineStepError({
+            message: `Failed to launch agent thread: ${cause.message}`,
+            cause,
+          }),
+      ),
+      Effect.map((launch) => launch.projection.runs),
+    );
+
   const runAgentStep: RoutineThreadRunner["Service"]["runAgentStep"] = Effect.fn(
     "RoutineThreadRunner.runAgentStep",
   )(function* (input) {
@@ -208,38 +243,37 @@ const make = Effect.gen(function* () {
         ),
       );
     const commandId = CommandId.make(`routine-run:${unique}`);
-    const threadId = ThreadId.make(`routine-run:${unique}`);
+    const threadId = input.continueThreadId ?? ThreadId.make(`routine-run:${unique}`);
     const messageId = MessageId.make(`routine-run:${unique}`);
     const modelSelection = input.modelSelection;
 
-    const launch = yield* ThreadMessageIntake.launchThread({
-      commandId,
-      threadId,
-      projectId: input.projectId,
-      title: input.title,
-      modelSelection,
-      runtimeMode: input.runtimeMode ?? "full-access",
-      interactionMode: "default",
-      workspaceStrategy: input.workspaceStrategy,
-      initialMessage: { messageId, text: input.prompt, attachments: [] },
-      createdBy: "agent",
-      creationSource: "server",
-    }).pipe(
-      Effect.provide(launchContext),
-      Effect.mapError(
-        (cause) =>
-          new RoutineStepError({
-            message: `Failed to launch agent thread: ${cause.message}`,
-            cause,
-          }),
-      ),
-    );
-
+    const started = yield* input.continueThreadId === undefined
+      ? launchStep(input, { commandId, threadId, messageId, modelSelection })
+      : threadManagement
+          .sendToThread({
+            projectId: input.projectId,
+            commandId,
+            threadId,
+            messageId,
+            text: input.prompt,
+            attachments: [],
+            mode: "auto",
+            createdBy: "agent",
+            creationSource: "server",
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RoutineStepError({
+                  message: `Failed to continue agent thread: ${cause.message}`,
+                  cause,
+                }),
+            ),
+            Effect.map((sent) => [sent.run]),
+          );
     if (input.onLaunched !== undefined) yield* input.onLaunched(threadId);
-
     const run =
-      launch.projection.runs.find((candidate) => candidate.userMessageId === messageId) ??
-      launch.projection.runs.at(-1);
+      started.find((candidate) => candidate.userMessageId === messageId) ?? started.at(-1);
 
     const waitForRun = threadManagement
       .waitForThread({
