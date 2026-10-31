@@ -527,7 +527,12 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({}),
   Layer.mock(ResourceTelemetry.ResourceTelemetry)({}),
   Layer.mock(ReviewService.ReviewService)({}),
-  Layer.mock(Routines.RoutineService)({ list: () => Effect.succeed({ routines: [] }) }),
+  Layer.mock(Routines.RoutineService)({
+    list: () => Effect.succeed({ routines: [] }),
+    start: () => Effect.die("routines.start is unused in ws tests"),
+    subscribeExecutions: () => Stream.empty,
+    subscribeExecution: () => Stream.empty,
+  }),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(GuestShareService.GuestShareService)({}),

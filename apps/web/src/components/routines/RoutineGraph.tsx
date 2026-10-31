@@ -1,4 +1,6 @@
-import type { RoutineDefinition, RoutineStep } from "@t3tools/contracts";
+import type { RoutineDefinition, RoutineStep, RoutineStepRunStatus } from "@t3tools/contracts";
+
+import { cn } from "../../lib/utils";
 
 import { Badge } from "../ui/badge";
 import {
@@ -20,6 +22,14 @@ const KIND_LABEL: Record<RoutineStep["kind"], string> = {
   agent: "Agent",
   command: "Command",
   action: "Action",
+};
+
+/** Static, non-animated node tints keyed by per-step run status. `pending` keeps the base card. */
+const STATUS_NODE_CLASS: Record<RoutineStepRunStatus, string> = {
+  pending: "",
+  running: "border-info/60 bg-info/8 dark:bg-info/16",
+  done: "border-success/60 bg-success/8 dark:bg-success/16",
+  failed: "border-destructive/60 bg-destructive/8 dark:bg-destructive/16",
 };
 
 const nodeLeft = (column: number) => PADDING + column * (NODE_WIDTH + COLUMN_GAP);
@@ -67,7 +77,13 @@ function RoutineGraphEdgeLabel({
   );
 }
 
-export function RoutineGraph({ definition }: { readonly definition: RoutineDefinition }) {
+export function RoutineGraph({
+  definition,
+  stepStatus,
+}: {
+  readonly definition: RoutineDefinition;
+  readonly stepStatus?: ReadonlyMap<string, RoutineStepRunStatus>;
+}) {
   const layout = layoutRoutineGraph(definition);
   const nodeById = new Map(layout.nodes.map((node) => [node.id, node] as const));
 
@@ -127,7 +143,14 @@ export function RoutineGraph({ definition }: { readonly definition: RoutineDefin
             width={NODE_WIDTH}
             height={NODE_HEIGHT}
           >
-            <div className="flex h-full flex-col gap-1 overflow-hidden rounded-md border bg-card p-2">
+            <div
+              className={cn(
+                "flex h-full flex-col gap-1 overflow-hidden rounded-md border bg-card p-2",
+                stepStatus === undefined
+                  ? null
+                  : STATUS_NODE_CLASS[stepStatus.get(node.id) ?? "pending"],
+              )}
+            >
               <div className="flex items-center justify-between gap-1">
                 <span className="truncate text-xs font-medium text-foreground">
                   {node.title ?? node.id}

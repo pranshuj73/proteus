@@ -56,6 +56,12 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as RoutineService from "../routines/RoutineService.ts";
+import * as RoutineExecutionRepository from "../routines/ExecutionRepository.ts";
+import * as RoutineExecutor from "../routines/Executor.ts";
+import * as RoutineGitAdapter from "../routines/adapters/git.ts";
+import * as RoutineProcessAdapter from "../routines/adapters/process.ts";
+import * as RoutineThreadAdapter from "../routines/adapters/threads.ts";
+import * as RoutineAuthoring from "../routines/RoutineAuthoring.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -291,7 +297,31 @@ const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
     ),
   ),
 );
-const layerRoutineServiceProvided = RoutineService.layer.pipe(Layer.provide(layerProjectService));
+const layerRoutineExecutorProvided = RoutineExecutor.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerProjectService,
+      RoutineExecutionRepository.layer,
+      RoutineProcessAdapter.layer,
+      RoutineGitAdapter.layer,
+      RoutineThreadAdapter.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerProjectService,
+            layerThreadManagementProvided,
+            layerThreadLaunchProvided,
+          ),
+        ),
+      ),
+    ),
+  ),
+);
+const layerRoutineServiceProvided = RoutineService.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerProjectService, layerRoutineExecutorProvided)),
+);
+const layerRoutineAuthoringProvided = RoutineAuthoring.layer.pipe(
+  Layer.provide(layerProjectService),
+);
 const layerScratchThreadPromotionProvided = ScratchThreadPromotion.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -376,6 +406,7 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLaunchProvided,
   layerScheduledTaskProvided,
   layerRoutineServiceProvided,
+  layerRoutineAuthoringProvided,
   layerScratchThreadPromotionProvided,
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(

@@ -1,4 +1,9 @@
-import type { RoutineSummary } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  RoutineExecutionId,
+  RoutineSummary,
+} from "@t3tools/contracts";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import { useProjects } from "../../state/entities";
@@ -10,6 +15,9 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { SidebarInset } from "../ui/sidebar";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { RoutineGraph } from "./RoutineGraph";
+import { NewRoutineButton } from "./NewRoutineButton";
+import { RoutineExecutionsList } from "./RoutineExecutionsList";
+import { RoutineRunDialog } from "./RoutineRunDialog";
 
 function RoutineIssueList({ issues }: { readonly issues: RoutineSummary["issues"] }) {
   return (
@@ -32,7 +40,19 @@ function RoutineIssueList({ issues }: { readonly issues: RoutineSummary["issues"
   );
 }
 
-function RoutineCard({ summary }: { readonly summary: RoutineSummary }) {
+function RoutineCard({
+  summary,
+  environmentId,
+  projectId,
+  selectedExecutionId,
+  onSelectExecution,
+}: {
+  readonly summary: RoutineSummary;
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly selectedExecutionId: RoutineExecutionId | null;
+  readonly onSelectExecution: (executionId: RoutineExecutionId) => void;
+}) {
   const valid = summary.issues.length === 0;
   const name = summary.definition?.name ?? summary.id;
   return (
@@ -42,12 +62,29 @@ function RoutineCard({ summary }: { readonly summary: RoutineSummary }) {
           <h2 className="truncate text-sm font-semibold text-foreground">{name}</h2>
           <span className="truncate font-mono text-xs text-muted-foreground">{summary.path}</span>
         </div>
-        <Badge variant={valid ? "success" : "destructive"} size="sm" className="shrink-0">
-          {valid ? "Valid" : "Invalid"}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-2">
+          <Badge variant={valid ? "success" : "destructive"} size="sm">
+            {valid ? "Valid" : "Invalid"}
+          </Badge>
+          <RoutineRunDialog
+            environmentId={environmentId}
+            projectId={projectId}
+            routineId={summary.id}
+            routineName={name}
+            disabled={!valid}
+            onStarted={onSelectExecution}
+          />
+        </div>
       </div>
       {valid ? null : <RoutineIssueList issues={summary.issues} />}
       {summary.definition === null ? null : <RoutineGraph definition={summary.definition} />}
+      <RoutineExecutionsList
+        environmentId={environmentId}
+        projectId={projectId}
+        routineId={summary.id}
+        selectedExecutionId={selectedExecutionId}
+        onSelect={onSelectExecution}
+      />
     </section>
   );
 }
@@ -68,36 +105,48 @@ export function RoutinesPage() {
         }),
   );
   const routines = routinesQuery.data?.routines ?? [];
+  const selectExecution = (executionId: RoutineExecutionId) => {
+    if (selected === null) return;
+    void navigate({
+      to: "/routines",
+      search: { projectId: selected.id, environmentId: selected.environmentId, executionId },
+    });
+  };
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b px-5">
           <h1 className="text-base font-semibold">Routines</h1>
-          {projects.length === 0 ? null : (
-            <Select
-              value={selected?.id ?? ""}
-              onValueChange={(projectId) => {
-                const next = projects.find((project) => project.id === projectId);
-                if (next === undefined) return;
-                void navigate({
-                  to: "/routines",
-                  search: { projectId: next.id, environmentId: next.environmentId },
-                });
-              }}
-            >
-              <SelectTrigger size="sm" aria-label="Project">
-                <SelectValue placeholder="Select a project">{selected?.title}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup>
-                {projects.map((project) => (
-                  <SelectItem key={`${project.environmentId}:${project.id}`} value={project.id}>
-                    {project.title}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          )}
+          <div className="flex items-center gap-2">
+            {selected === null ? null : (
+              <NewRoutineButton environmentId={selected.environmentId} projectId={selected.id} />
+            )}
+            {projects.length === 0 ? null : (
+              <Select
+                value={selected?.id ?? ""}
+                onValueChange={(projectId) => {
+                  const next = projects.find((project) => project.id === projectId);
+                  if (next === undefined) return;
+                  void navigate({
+                    to: "/routines",
+                    search: { projectId: next.id, environmentId: next.environmentId },
+                  });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Project">
+                  <SelectValue placeholder="Select a project">{selected?.title}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  {projects.map((project) => (
+                    <SelectItem key={`${project.environmentId}:${project.id}`} value={project.id}>
+                      {project.title}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            )}
+          </div>
         </header>
 
         <ScrollArea className="min-h-0 flex-1">
@@ -122,7 +171,14 @@ export function RoutinesPage() {
             ) : (
               <div className="flex flex-col gap-4">
                 {routines.map((summary) => (
-                  <RoutineCard key={summary.id} summary={summary} />
+                  <RoutineCard
+                    key={summary.id}
+                    summary={summary}
+                    environmentId={selected.environmentId}
+                    projectId={selected.id}
+                    selectedExecutionId={search.executionId ?? null}
+                    onSelectExecution={selectExecution}
+                  />
                 ))}
               </div>
             )}

@@ -2,11 +2,15 @@ import * as Schema from "effect/Schema";
 
 import {
   ForwardCompatibleArray,
+  IsoDateTime,
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  RoutineExecutionId,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 const KEBAB_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -158,3 +162,116 @@ export class RoutineError extends Schema.TaggedError<RoutineError>()("RoutineErr
   routineId: Schema.optional(RoutineId),
   cause: Schema.optional(Schema.Defect()),
 }) {}
+
+/** Lean execution lifecycle: no approval gate, no retries. */
+export const RoutineExecutionStatus = Schema.Literals([
+  "running",
+  "failed",
+  "awaiting_review",
+  "completed",
+]);
+export type RoutineExecutionStatus = typeof RoutineExecutionStatus.Type;
+
+export const RoutineStepRunStatus = Schema.Literals(["pending", "running", "done", "failed"]);
+export type RoutineStepRunStatus = typeof RoutineStepRunStatus.Type;
+
+export const RoutineVerdict = Schema.Struct({
+  label: Schema.String,
+  reason: Schema.String,
+});
+export type RoutineVerdict = typeof RoutineVerdict.Type;
+
+export const RoutineExecutionStep = Schema.Struct({
+  stepId: RoutineStepId,
+  attempt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  status: RoutineStepRunStatus,
+  verdict: Schema.NullOr(RoutineVerdict),
+  outputExcerpt: Schema.NullOr(Schema.String),
+  threadId: Schema.NullOr(ThreadId),
+  error: Schema.NullOr(Schema.String),
+  startedAt: IsoDateTime,
+  finishedAt: Schema.NullOr(IsoDateTime),
+});
+export type RoutineExecutionStep = typeof RoutineExecutionStep.Type;
+
+export const RoutineExecution = Schema.Struct({
+  id: RoutineExecutionId,
+  projectId: ProjectId,
+  routineId: RoutineId,
+  routineHash: Schema.String,
+  definition: RoutineDefinition,
+  brief: Schema.String,
+  status: RoutineExecutionStatus,
+  worktreePath: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  finishedAt: Schema.NullOr(IsoDateTime),
+});
+export type RoutineExecution = typeof RoutineExecution.Type;
+
+export const RoutineStartInput = Schema.Struct({
+  projectId: ProjectId,
+  routineId: RoutineId,
+  brief: Schema.String,
+  modelSelection: Schema.optional(ModelSelection),
+});
+export type RoutineStartInput = typeof RoutineStartInput.Type;
+
+export const RoutineStartResult = Schema.Struct({
+  execution: RoutineExecution,
+});
+export type RoutineStartResult = typeof RoutineStartResult.Type;
+
+export const RoutineExecutionsInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type RoutineExecutionsInput = typeof RoutineExecutionsInput.Type;
+
+export const RoutineExecutionsResult = Schema.Struct({
+  executions: ForwardCompatibleArray(RoutineExecution),
+});
+export type RoutineExecutionsResult = typeof RoutineExecutionsResult.Type;
+
+export const RoutineExecutionInput = Schema.Struct({
+  executionId: RoutineExecutionId,
+});
+export type RoutineExecutionInput = typeof RoutineExecutionInput.Type;
+
+export const RoutineExecutionResult = Schema.Struct({
+  execution: RoutineExecution,
+  steps: ForwardCompatibleArray(RoutineExecutionStep),
+});
+export type RoutineExecutionResult = typeof RoutineExecutionResult.Type;
+
+/**
+ * Model-facing guidance for drafting a routine from a user's use case. Shared by
+ * the server author-instructions module and the web "New routine" launcher so both
+ * seed the same text.
+ */
+export const ROUTINE_AUTHOR_INSTRUCTIONS = `You are drafting a **routine**: a reusable, multi-step workflow stored as JSON at \`.proteus/routines/<routine-id>.json\`. Design one from the user's described use case, then save it with the MCP tools.
+
+Routine JSON shape:
+  version: always the number 1.
+  name: short human title (required, non-empty).
+  description: optional one-line summary.
+  start: optional step id to begin at (defaults to the first step).
+  steps: non-empty array of steps. Every id is kebab-case (^[a-z0-9]+(?:-[a-z0-9]+)*$, <= 64 chars) and unique.
+
+Each step has an id, optional title, a kind, and transitions:
+  kind "command": run a shell command. Fields: argv (non-empty string array), optional cwd (relative to the worktree), passExitCodes (default [0]). Implicit verdict labels: pass | fail.
+  kind "agent": delegate to an agent. Fields: purpose (what to do), verdict: { labels: [...] } (your own kebab-case outcome labels, at least one).
+  kind "skill": run a named skill. Fields: skill ("name" or "source@name"), optional prompt, verdict: { labels: [...] }.
+  kind "action": a built-in action. Fields: action ("git.push" or "pr.create"), optional draft. Implicit verdict labels: created | failed.
+
+Transitions (a step with neither is terminal):
+  next: array of step ids to run unconditionally after this step. Mutually exclusive with on.
+  on: map from a verdict label to the next step id, or to "$end" to finish the execution. Cover every verdict label the step can produce.
+  inputs: ids of earlier steps whose output is passed to this step as evidence.
+
+Workflow:
+  1. Draft the routine JSON from the user's use case. Prefer a simple linear next chain unless they need branching.
+  2. Call t3_routine_validate with { projectId, definition }. Fix every reported issue and re-validate. Make at most 3 repair passes.
+  3. Once validation returns no issues, call t3_routine_save with { projectId, routineId, definition } (routineId is the kebab-case file name). It writes the file and returns its path.
+  4. Tell the user the routine is saved and where, or report the remaining issues if you could not resolve them.`;

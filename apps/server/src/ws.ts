@@ -2143,6 +2143,9 @@ export const layerWsRpc = (
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),
         [WS_METHODS.routinesList]: (input) => routines.list(input),
+        [WS_METHODS.routinesStart]: (input) => routines.start(input),
+        [WS_METHODS.routinesSubscribeExecutions]: (input) => routines.subscribeExecutions(input),
+        [WS_METHODS.routinesSubscribeExecution]: (input) => routines.subscribeExecution(input),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.setEnabled(input)),

@@ -372,7 +372,17 @@ import {
   ScheduledTaskUpsertInput,
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
-import { RoutineError, RoutineListInput, RoutineListResult } from "./routine.ts";
+import {
+  RoutineError,
+  RoutineExecutionInput,
+  RoutineExecutionResult,
+  RoutineExecutionsInput,
+  RoutineExecutionsResult,
+  RoutineListInput,
+  RoutineListResult,
+  RoutineStartInput,
+  RoutineStartResult,
+} from "./routine.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
   ProjectCloneActionInput,
@@ -544,6 +554,9 @@ export const WS_METHODS = {
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
   routinesList: "routines.list",
+  routinesStart: "routines.start",
+  routinesSubscribeExecutions: "routines.subscribeExecutions",
+  routinesSubscribeExecution: "routines.subscribeExecution",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1939,6 +1952,26 @@ const WsRoutinesListRpc = Rpc.make(WS_METHODS.routinesList, {
   error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
 });
 
+const WsRoutinesStartRpc = Rpc.make(WS_METHODS.routinesStart, {
+  payload: RoutineStartInput,
+  success: RoutineStartResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+});
+
+const WsRoutinesSubscribeExecutionsRpc = Rpc.make(WS_METHODS.routinesSubscribeExecutions, {
+  payload: RoutineExecutionsInput,
+  success: RoutineExecutionsResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsRoutinesSubscribeExecutionRpc = Rpc.make(WS_METHODS.routinesSubscribeExecution, {
+  payload: RoutineExecutionInput,
+  success: RoutineExecutionResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess, {
   payload: Schema.Struct({}),
   success: AuthAccessStreamEvent,
@@ -2024,6 +2057,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsRoutinesListRpc,
+  WsRoutinesStartRpc,
+  WsRoutinesSubscribeExecutionsRpc,
+  WsRoutinesSubscribeExecutionRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

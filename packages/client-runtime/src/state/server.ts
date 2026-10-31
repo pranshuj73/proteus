@@ -1292,6 +1292,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:list",
       tag: WS_METHODS.routinesList,
     }),
+    routineExecutions: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:routines:executions",
+      tag: WS_METHODS.routinesSubscribeExecutions,
+    }),
+    routineExecution: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:server:routines:execution",
+      tag: WS_METHODS.routinesSubscribeExecution,
+    }),
+    startRoutine: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:start",
+      tag: WS_METHODS.routinesStart,
+    }),
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,

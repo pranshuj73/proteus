@@ -1,4 +1,4 @@
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, RoutineExecutionId } from "@t3tools/contracts";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { RoutinesPage } from "../components/routines/RoutinesPage";
@@ -6,6 +6,7 @@ import { RoutinesPage } from "../components/routines/RoutinesPage";
 export interface RoutinesSearch {
   readonly projectId?: ProjectId;
   readonly environmentId?: EnvironmentId;
+  readonly executionId?: RoutineExecutionId;
 }
 
 export const Route = createFileRoute("/_chat/routines")({
@@ -15,6 +16,9 @@ export const Route = createFileRoute("/_chat/routines")({
       : {}),
     ...(typeof raw.environmentId === "string" && raw.environmentId
       ? { environmentId: raw.environmentId as EnvironmentId }
+      : {}),
+    ...(typeof raw.executionId === "string" && raw.executionId
+      ? { executionId: raw.executionId as RoutineExecutionId }
       : {}),
   }),
   component: RoutinesPage,
