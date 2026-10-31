@@ -17,6 +17,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
+import { RoutineExecutionControls } from "./RoutineExecutionControls";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { RoutineCouncilFeed } from "./RoutineCouncilFeed";
@@ -39,6 +40,8 @@ const EXECUTION_BADGE: Record<
   { readonly variant: BadgeVariant; readonly label: string }
 > = {
   running: { variant: "info", label: "Running" },
+  paused: { variant: "outline", label: "Paused" },
+  needs_attention: { variant: "warning", label: "Needs attention" },
   awaiting_review: { variant: "warning", label: "Awaiting review" },
   completed: { variant: "success", label: "Completed" },
   failed: { variant: "error", label: "Failed" },
@@ -155,7 +158,14 @@ export function RoutineExecutionView({
             {EXECUTION_BADGE[execution.status].label}
           </Badge>
           <span className="min-w-0 flex-1" />
-          {execution.status === "running" ? (
+          <RoutineExecutionControls
+            execution={execution}
+            steps={steps}
+            environmentId={environmentId}
+          />
+          {execution.status === "running" ||
+          execution.status === "paused" ||
+          execution.status === "needs_attention" ? (
             <Button
               size="compact"
               variant="outline"

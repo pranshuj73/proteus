@@ -23,9 +23,11 @@ import {
   type RoutineCancelResult,
   type RoutineCompleteInput,
   type RoutineCompleteResult,
+  type RoutineControlInput,
   type RoutineRemoveExecutableInput,
   type RoutineRevokeInput,
   routineExecutables,
+  routineStepVerdictLabels,
   type RoutineStartInput,
   type RoutineStartResult,
   type RoutineId,
@@ -35,6 +37,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -82,6 +85,14 @@ const causeMessage = (cause: Cause.Cause<unknown>, fallback: string): string => 
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 };
 
+type WalkDecision = Exclude<RoutineControlInput, { readonly action: "pause" }>;
+
+/** Live handle on a walk; a parked walk waits on `waiter` for the user's decision. */
+interface WalkControl {
+  pauseRequested: boolean;
+  waiter: Deferred.Deferred<WalkDecision> | null;
+}
+
 export class Executor extends Context.Service<
   Executor,
   {
@@ -95,6 +106,7 @@ export class Executor extends Context.Service<
       ReadonlyMap<string, { readonly hash: string; readonly definition: RoutineDefinition | null }>,
       RoutineError
     >;
+    readonly control: (input: RoutineControlInput) => Effect.Effect<void, RoutineError>;
     readonly revoke: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
     readonly removeExecutable: (
       input: RoutineRemoveExecutableInput,
@@ -137,6 +149,7 @@ const make = Effect.gen(function* () {
   const changesPubSub = yield* PubSub.sliding<void>(1);
 
   const runningFibers = new Map<RoutineExecutionId, Fiber.Fiber<void>>();
+  const walkControls = new Map<RoutineExecutionId, WalkControl>();
   // Council threads are not step rows, so cancel needs its own list to stop them.
   const councilThreads = new Map<RoutineExecutionId, Set<ThreadId>>();
 
@@ -315,7 +328,45 @@ const make = Effect.gen(function* () {
       };
 
       const attempts = new Map<RoutineStepId, number>();
+      const done = new Set<RoutineStepId>();
       const outputs = new Map<RoutineStepId, string>();
+      // Attempts stay unique per row; retries only reset how many count toward the step's limit.
+      const attemptBase = new Map<RoutineStepId, number>();
+      const control: WalkControl = { pauseRequested: false, waiter: null };
+      walkControls.set(initial.id, control);
+
+      /** Holds the walk in `status` until the user decides; the worktree stays untouched. */
+      const park = Effect.fn("Executor.park")(function* (
+        status: "paused" | "needs_attention" | "failed",
+        error: string | null,
+      ) {
+        const updatedAt = yield* nowIso;
+        const waiter = yield* Deferred.make<WalkDecision>();
+        control.waiter = waiter;
+        yield* persistExecution({
+          ...initial,
+          status,
+          error,
+          updatedAt,
+          finishedAt: status === "failed" ? updatedAt : null,
+        });
+        const decision = yield* Deferred.await(waiter);
+        control.waiter = null;
+        yield* persistExecution({ ...initial, status: "running", updatedAt: yield* nowIso });
+        return decision;
+      });
+
+      const resetAttempts = (id: RoutineStepId) => void attemptBase.set(id, attempts.get(id) ?? 0);
+
+      /** Drops results from `id` onward in declared order, so they run again. */
+      const invalidateFrom = (id: RoutineStepId) => {
+        const index = definition.steps.findIndex((step) => step.id === id);
+        for (const step of definition.steps.slice(Math.max(index, 0))) {
+          done.delete(step.id);
+          outputs.delete(step.id);
+          resetAttempts(step.id);
+        }
+      };
 
       interface StepRun {
         readonly step: RoutineStep;
@@ -333,7 +384,7 @@ const make = Effect.gen(function* () {
       ): Effect.fn.Return<StepRun, never, RoutineStepRequirements> {
         const attempt = (attempts.get(step.id) ?? 0) + 1;
         const limit = attemptLimit(step);
-        if (attempt > limit) {
+        if (attempt - (attemptBase.get(step.id) ?? 0) > limit) {
           return {
             step,
             error: `Step "${step.id}" exceeded its limit of ${limit} iterations.`,
@@ -462,11 +513,25 @@ const make = Effect.gen(function* () {
         return null;
       });
 
-      const done = new Set<RoutineStepId>();
       let waiting: ReadonlyArray<RoutineStepId> = [];
       const startId = definition.start ?? definition.steps[0]?.id;
       let ready: ReadonlyArray<RoutineStepId> = startId === undefined ? [] : [startId];
       while (ready.length > 0) {
+        const approvals = yield* repository.listApprovals(initial.projectId).pipe(Effect.orDie);
+        const approved = approvals.get(initial.routineId);
+        const revoked = approved?.hash !== initial.routineHash;
+        if (control.pauseRequested || revoked) {
+          control.pauseRequested = false;
+          const decision = yield* park(
+            "paused",
+            revoked ? "This routine's approval was revoked or changed." : null,
+          );
+          if (decision.action === "restart") {
+            invalidateFrom(decision.stepId);
+            ready = [decision.stepId];
+            waiting = [];
+          }
+        }
         const steps: RoutineStep[] = [];
         for (const id of ready) {
           const step = definition.steps.find((candidate) => candidate.id === id);
@@ -484,17 +549,15 @@ const make = Effect.gen(function* () {
           concurrency: "unbounded",
         });
 
-        const failure = runs.find(
+        const failures = runs.filter(
           (run) => run.error !== null && (run.fatal || run.step.onError === undefined),
         );
-        if (failure !== undefined) {
-          return yield* fail(failure.error ?? "Step produced no result.");
-        }
         const conflict = yield* mergeBranches(runs);
         if (conflict !== null) return yield* fail(conflict);
 
         const reached: RoutineStepId[] = [...waiting];
         for (const run of runs) {
+          if (failures.includes(run)) continue;
           if (run.error !== null || run.result === undefined) {
             if (run.step.onError !== undefined) reached.push(run.step.onError);
             continue;
@@ -502,6 +565,41 @@ const make = Effect.gen(function* () {
           done.add(run.step.id);
           reached.push(...nextSteps(definition, run.step.id, run.result.verdict.label));
         }
+
+        let restarted = false;
+        for (const failed of failures) {
+          if (restarted) break;
+          const decision = yield* park(
+            failed.fatal ? "needs_attention" : "failed",
+            failed.error ?? "Step produced no result.",
+          );
+          if (decision.action === "skip") {
+            const attempt = attempts.get(failed.step.id) ?? 1;
+            yield* persistStep({
+              executionId: initial.id,
+              stepId: failed.step.id,
+              attempt: attempt + 1,
+              status: "done",
+              verdict: { label: decision.label, reason: `Skipped by a person: ${decision.reason}` },
+              outputExcerpt: null,
+              threadId: null,
+              error: null,
+              startedAt: yield* nowIso,
+              finishedAt: yield* nowIso,
+            });
+            attempts.set(failed.step.id, attempt + 1);
+            done.add(failed.step.id);
+            reached.push(...nextSteps(definition, failed.step.id, decision.label));
+          } else if (decision.action === "restart") {
+            invalidateFrom(decision.stepId);
+            reached.splice(0, reached.length, decision.stepId);
+            restarted = true;
+          } else {
+            resetAttempts(failed.step.id);
+            reached.push(failed.step.id);
+          }
+        }
+
         const next = resolveReady(definition, reached, done);
         for (const id of next.ready) {
           for (const dependency of definition.steps.find((step) => step.id === id)?.join ?? []) {
@@ -698,7 +796,12 @@ const make = Effect.gen(function* () {
         modelSelection,
       ).pipe(
         Effect.provide(stepEnv),
-        Effect.ensuring(Effect.sync(() => void runningFibers.delete(execution.id))),
+        Effect.ensuring(
+          Effect.sync(() => {
+            runningFibers.delete(execution.id);
+            walkControls.delete(execution.id);
+          }),
+        ),
       ),
       layerScope,
     );
@@ -709,7 +812,12 @@ const make = Effect.gen(function* () {
   const cancel: Executor["Service"]["cancel"] = Effect.fn("Executor.cancel")(function* (id) {
     const { execution, steps } = yield* readExecution(id);
     const fiber = runningFibers.get(id);
-    if (execution.status !== "running" || fiber === undefined) {
+    if (
+      fiber === undefined ||
+      execution.status === "awaiting_review" ||
+      execution.status === "completed" ||
+      execution.status === "cancelled"
+    ) {
       return yield* new RoutineError({ message: `Routine execution ${id} is not running.` });
     }
     yield* Fiber.interrupt(fiber);
@@ -747,6 +855,35 @@ const make = Effect.gen(function* () {
     };
     yield* persistExecution(cancelled);
     return { execution: cancelled };
+  });
+
+  const control: Executor["Service"]["control"] = Effect.fn("Executor.control")(function* (input) {
+    const walk = walkControls.get(input.executionId);
+    if (walk === undefined) {
+      return yield* new RoutineError({
+        message: "This execution is no longer active, so it cannot be controlled.",
+      });
+    }
+    if (input.action === "pause") {
+      walk.pauseRequested = true;
+      return;
+    }
+    if (walk.waiter === null) {
+      return yield* new RoutineError({ message: "This execution is not waiting for a decision." });
+    }
+    if (input.action === "skip" || input.action === "restart") {
+      const { execution } = yield* readExecution(input.executionId);
+      const step = execution.definition.steps.find((candidate) => candidate.id === input.stepId);
+      if (step === undefined) {
+        return yield* new RoutineError({ message: `Unknown step "${input.stepId}".` });
+      }
+      if (input.action === "skip" && !routineStepVerdictLabels(step).includes(input.label)) {
+        return yield* new RoutineError({
+          message: `"${input.label}" is not a verdict of that step.`,
+        });
+      }
+    }
+    yield* Deferred.succeed(walk.waiter, input);
   });
 
   const complete: Executor["Service"]["complete"] = Effect.fn("Executor.complete")(
@@ -895,6 +1032,7 @@ const make = Effect.gen(function* () {
     approvals: repository.listApprovals,
     cancel,
     complete,
+    control,
     revoke: repository.deleteApproval,
     removeExecutable: repository.removeAllowlist,
     allowlist: repository.listAllowlist,

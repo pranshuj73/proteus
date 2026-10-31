@@ -15,6 +15,7 @@ import {
   type RoutineCancelResult,
   type RoutineCompleteInput,
   type RoutineCompleteResult,
+  type RoutineControlInput,
   type RoutineRemoveExecutableInput,
   type RoutineRevokeInput,
   routineExecutables,
@@ -48,6 +49,7 @@ export class RoutineService extends Context.Service<
     readonly complete: (
       input: RoutineCompleteInput,
     ) => Effect.Effect<RoutineCompleteResult, RoutineError>;
+    readonly control: (input: RoutineControlInput) => Effect.Effect<void, RoutineError>;
     readonly revoke: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
     readonly removeExecutable: (
       input: RoutineRemoveExecutableInput,
@@ -121,6 +123,7 @@ const make = Effect.gen(function* () {
       executor.cancel(input.executionId),
     ),
     complete: executor.complete,
+    control: executor.control,
     revoke: executor.revoke,
     removeExecutable: executor.removeExecutable,
     subscribeExecutions: (input) => executor.subscribeExecutions(input.projectId),

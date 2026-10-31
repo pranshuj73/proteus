@@ -529,6 +529,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ReviewService.ReviewService)({}),
   Layer.mock(Routines.RoutineService)({
     list: () => Effect.succeed({ routines: [], allowlist: [] }),
+    control: () => Effect.die("routines.control is unused in ws tests"),
     start: () => Effect.die("routines.start is unused in ws tests"),
     cancel: () => Effect.die("routines.cancel is unused in ws tests"),
     approve: () => Effect.die("routines.approve is unused in ws tests"),

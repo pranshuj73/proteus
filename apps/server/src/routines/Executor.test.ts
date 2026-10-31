@@ -393,6 +393,57 @@ it.effect(
   },
 );
 
+it.effect("retry, skip and pause steer a parked execution", () => {
+  const failing = ["make"];
+  return withExecutor(
+    {
+      failing,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          { id: "build", kind: "command", argv: ["make"], next: ["test"] },
+          { id: "test", kind: "command", argv: ["make", "test"] },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const executionId = execution.id;
+        yield* awaitSettled(executor, executionId);
+
+        failing.length = 0;
+        failing.push("make test");
+        yield* executor.control({ executionId, action: "retry" });
+        const second = yield* executor.subscribeExecution(executionId).pipe(
+          Stream.filter(
+            (snapshot) =>
+              snapshot.execution.status === "failed" &&
+              snapshot.steps.some((step) => step.stepId === "test"),
+          ),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.equal(second.steps.findLast((step) => step.status === "failed")?.stepId, "test");
+
+        yield* executor.control({
+          executionId,
+          action: "skip",
+          stepId: RoutineStepId.make("test"),
+          label: "pass",
+          reason: "known flake",
+        });
+        const finished = yield* executor.subscribeExecution(executionId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.include(finished.steps.at(-1)?.verdict?.reason ?? "", "known flake");
+      }),
+  );
+});
+
 it.effect("an agent step with no valid verdict fails the step and execution", () =>
   withExecutor(
     {
@@ -568,7 +619,7 @@ it.effect("a verdict loop retries with increasing attempts until maxIterations f
       Effect.gen(function* () {
         const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
         const settled = yield* awaitSettled(executor, execution.id);
-        assert.equal(settled.execution.status, "failed");
+        assert.equal(settled.execution.status, "needs_attention");
         assert.include(settled.execution.error ?? "", 'Step "build" exceeded its limit of 3');
         assert.deepEqual(settled.steps.map((step) => [step.stepId, step.attempt]).sort(), [
           ["build", 1],

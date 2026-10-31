@@ -271,7 +271,7 @@ const make = Effect.gen(function* () {
       SELECT execution_id, project_id, routine_id, routine_hash, definition_json, brief, status,
              worktree_path, branch, error, created_at, updated_at, finished_at
       FROM routine_executions
-      WHERE status = 'running'
+      WHERE status IN ('running', 'paused', 'needs_attention')
     `.pipe(
       NodeSqliteClient.readOnly,
       Effect.mapError((cause) => repositoryError("Could not list running executions.", cause)),

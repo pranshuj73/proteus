@@ -185,6 +185,8 @@ export class RoutineError extends Schema.TaggedError<RoutineError>()("RoutineErr
 /** Lean execution lifecycle: no approval gate, no retries. */
 export const RoutineExecutionStatus = Schema.Literals([
   "running",
+  "paused",
+  "needs_attention",
   "failed",
   "awaiting_review",
   "completed",
@@ -325,6 +327,26 @@ export const RoutineCancelResult = Schema.Struct({
   execution: RoutineExecution,
 });
 export type RoutineCancelResult = typeof RoutineCancelResult.Type;
+
+export const RoutineControlInput = Schema.Union([
+  Schema.Struct({
+    executionId: RoutineExecutionId,
+    action: Schema.Literals(["pause", "resume", "retry"]),
+  }),
+  Schema.Struct({
+    executionId: RoutineExecutionId,
+    action: Schema.Literal("restart"),
+    stepId: RoutineStepId,
+  }),
+  Schema.Struct({
+    executionId: RoutineExecutionId,
+    action: Schema.Literal("skip"),
+    stepId: RoutineStepId,
+    label: Schema.String,
+    reason: Schema.String,
+  }),
+]);
+export type RoutineControlInput = typeof RoutineControlInput.Type;
 
 export const RoutineCompleteInput = Schema.Struct({
   executionId: RoutineExecutionId,

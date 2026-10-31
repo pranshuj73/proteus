@@ -22,6 +22,8 @@ const STATUS_BADGE: Record<
   { readonly variant: BadgeVariant; readonly label: string }
 > = {
   running: { variant: "info", label: "Running" },
+  paused: { variant: "outline", label: "Paused" },
+  needs_attention: { variant: "warning", label: "Needs attention" },
   awaiting_review: { variant: "warning", label: "Awaiting review" },
   completed: { variant: "success", label: "Completed" },
   failed: { variant: "error", label: "Failed" },
