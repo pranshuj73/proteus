@@ -30,7 +30,7 @@ import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/threads.ts";
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
 import * as RoutineStore from "./RoutineStore.ts";
-import { nextSteps } from "./routing.ts";
+import { attemptLimit, nextSteps } from "./routing.ts";
 import {
   type RoutineStepContext,
   type RoutineStepRequirements,
@@ -100,11 +100,13 @@ const make = Effect.gen(function* () {
       const stepContext: RoutineStepContext = {
         projectId: initial.projectId,
         brief: initial.brief,
+        routineName: definition.name,
         workspaceStrategy,
         modelSelection,
       };
 
       let current: RoutineStepId | undefined = definition.start ?? definition.steps[0]?.id;
+      const attempts = new Map<RoutineStepId, number>();
       while (current !== undefined) {
         const stepId: RoutineStepId = current;
         const step = definition.steps.find((candidate) => candidate.id === stepId);
@@ -120,11 +122,26 @@ const make = Effect.gen(function* () {
           return;
         }
 
+        const attempt = (attempts.get(step.id) ?? 0) + 1;
+        const limit = attemptLimit(step);
+        if (attempt > limit) {
+          const finishedAt = yield* nowIso;
+          yield* persistExecution({
+            ...initial,
+            status: "failed",
+            error: `Step "${step.id}" exceeded its limit of ${limit} iterations.`,
+            updatedAt: finishedAt,
+            finishedAt,
+          });
+          return;
+        }
+        attempts.set(step.id, attempt);
+
         const startedAt = yield* nowIso;
         const running: ExecutionStepRecord = {
           executionId: initial.id,
           stepId: step.id,
-          attempt: 1,
+          attempt,
           status: "running",
           verdict: null,
           outputExcerpt: null,
@@ -177,7 +194,19 @@ const make = Effect.gen(function* () {
           });
           return;
         }
-        current = nextSteps(definition, step.id, result.verdict.label)[0];
+        const successors = nextSteps(definition, step.id, result.verdict.label);
+        if (successors.length > 1) {
+          // Fan-out/join is not implemented; refuse rather than drop branches.
+          yield* persistExecution({
+            ...initial,
+            status: "failed",
+            error: `Step "${step.id}" has multiple next steps; parallel fan-out is not supported yet.`,
+            updatedAt: finishedAt,
+            finishedAt,
+          });
+          return;
+        }
+        current = successors[0];
       }
 
       const finishedAt = yield* nowIso;

@@ -65,6 +65,10 @@ const withExecutor = <A, E>(
           Layer.mock(RoutineGitProvisioner)({
             provisionWorktree: ({ branch }) =>
               Effect.succeed({ worktreePath: "/worktrees/routine", branch }),
+            createDraftPullRequest: ({ title }) =>
+              Effect.sync(() => void fakes.seen?.push(`pr:${title}`)).pipe(
+                Effect.as({ url: "https://example.test/pull/1" }),
+              ),
             pushBranch: ({ cwd }) =>
               Effect.sync(() => void fakes.seen?.push(`push:${cwd}`)).pipe(
                 Effect.as({ pushed: fakes.pushed ?? true, branch: "routine/pushed" }),
@@ -304,7 +308,7 @@ it.effect("cancelling stops the running step's agent thread", () =>
   }),
 );
 
-it.effect("git.push pushes the execution worktree; pr.create is unsupported", () =>
+it.effect("git.push and pr.create run from the execution worktree", () =>
   Effect.gen(function* () {
     const seen: Array<string> = [];
     return yield* withExecutor(
@@ -323,15 +327,15 @@ it.effect("git.push pushes the execution worktree; pr.create is unsupported", ()
         Effect.gen(function* () {
           const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
           const settled = yield* awaitSettled(executor, execution.id);
-          assert.deepEqual(seen, ["push:/worktrees/routine"]);
+          assert.deepEqual(seen, ["push:/worktrees/routine", "pr:demo"]);
           assert.equal(
             settled.steps.find((step) => step.stepId === "push")?.verdict?.label,
-            "pass",
+            "created",
           );
-          assert.equal(settled.execution.status, "failed");
-          assert.include(
-            settled.steps.find((step) => step.stepId === "pr")?.error ?? "",
-            "not supported",
+          assert.equal(settled.execution.status, "awaiting_review");
+          assert.equal(
+            settled.steps.find((step) => step.stepId === "pr")?.outputExcerpt,
+            "https://example.test/pull/1",
           );
         }),
     );
@@ -372,6 +376,63 @@ it.effect("starting an invalid routine fails with RoutineError", () =>
         const error = yield* executor.start({ projectId, routineId, brief: "" }).pipe(Effect.flip);
         assert.equal(error._tag, "RoutineError");
         assert.equal(error.routineId, routineId);
+      }),
+  ),
+);
+
+it.effect("a verdict loop retries with increasing attempts until maxIterations fails it", () =>
+  withExecutor(
+    {
+      exitCode: 1,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "build",
+            kind: "command",
+            argv: ["make"],
+            maxIterations: 3,
+            on: { pass: "$end", fail: "build" },
+          },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "failed");
+        assert.include(settled.execution.error ?? "", 'Step "build" exceeded its limit of 3');
+        assert.deepEqual(settled.steps.map((step) => [step.stepId, step.attempt]).sort(), [
+          ["build", 1],
+          ["build", 2],
+          ["build", 3],
+        ]);
+      }),
+  ),
+);
+
+it.effect("a step with several next steps fails instead of dropping branches", () =>
+  withExecutor(
+    {
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          { id: "build", kind: "command", argv: ["make"], next: ["a", "b"] },
+          { id: "a", kind: "command", argv: ["make"] },
+          { id: "b", kind: "command", argv: ["make"] },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "failed");
+        assert.include(settled.execution.error ?? "", "multiple next steps");
+        assert.equal(settled.steps.length, 1);
       }),
   ),
 );

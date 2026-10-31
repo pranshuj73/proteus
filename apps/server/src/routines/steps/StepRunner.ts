@@ -26,6 +26,8 @@ export class RoutineStepError extends Schema.TaggedError<RoutineStepError>()("Ro
 export interface RoutineStepContext {
   readonly projectId: ProjectId;
   readonly brief: string;
+  /** Default pull request title when a `pr.create` step has none. */
+  readonly routineName?: string | undefined;
   readonly workspaceStrategy: RoutineWorkspaceStrategy;
   readonly modelSelection?: ModelSelection | undefined;
   readonly onThreadLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;

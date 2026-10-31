@@ -13,13 +13,22 @@ export const runActionStep = Effect.fn("RoutineSteps.runActionStep")(function* (
   step: RoutineActionStep,
   context: RoutineStepContext,
 ) {
-  if (step.action === "pr.create") {
-    // No source-control provider can open a draft yet, and PRs from routines must be drafts.
-    return yield* new RoutineStepError({
-      message: `Action "pr.create" is not supported yet (step "${step.id}").`,
-    });
-  }
   const git = yield* RoutineGitProvisioner;
+  if (step.action === "pr.create") {
+    const branch = context.workspaceStrategy.branch;
+    const pr = yield* git
+      .createDraftPullRequest({
+        cwd: context.workspaceStrategy.worktreePath,
+        branch,
+        title: step.title ?? context.routineName ?? step.id,
+        body: context.brief,
+      })
+      .pipe(Effect.mapError((cause) => new RoutineStepError({ message: cause.message, cause })));
+    return {
+      verdict: { label: "created", reason: "draft pull request opened" },
+      outputExcerpt: pr.url ?? `Opened a draft pull request for ${branch}`,
+    } satisfies RoutineStepOutcome;
+  }
   const result = yield* git
     .pushBranch({
       cwd: context.workspaceStrategy.worktreePath,
@@ -32,7 +41,7 @@ export const runActionStep = Effect.fn("RoutineSteps.runActionStep")(function* (
     });
   }
   return {
-    verdict: { label: "pass", reason: "pushed" },
+    verdict: { label: "created", reason: "pushed" },
     outputExcerpt: `Pushed ${result.branch ?? context.workspaceStrategy.branch}`,
   } satisfies RoutineStepOutcome;
 });

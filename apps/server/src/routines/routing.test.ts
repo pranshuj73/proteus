@@ -2,7 +2,7 @@ import { RoutineDefinition } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { nextSteps } from "./routing.ts";
+import { DEFAULT_MAX_ITERATIONS, attemptLimit, nextSteps } from "./routing.ts";
 
 const decode = Schema.decodeUnknownSync(RoutineDefinition);
 
@@ -39,5 +39,18 @@ describe("routing.nextSteps", () => {
 
   it("returns no successors at a terminal step", () => {
     expect(nextSteps(definition, stepId("fix"), "pass")).toEqual([]);
+  });
+
+  it("bounds a step by maxIterations, else the default", () => {
+    const [build, loop] = decode({
+      version: 1,
+      name: "limits",
+      steps: [
+        { id: "build", kind: "command", argv: ["make"] },
+        { id: "loop", kind: "command", argv: ["make"], maxIterations: 3 },
+      ],
+    }).steps;
+    expect(attemptLimit(build!)).toBe(DEFAULT_MAX_ITERATIONS);
+    expect(attemptLimit(loop!)).toBe(3);
   });
 });

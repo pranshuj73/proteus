@@ -332,6 +332,13 @@ export const make = Effect.gen(function* () {
     ),
     createChangeRequest: Effect.fn("GitCafeSourceControlProvider.createChangeRequest")(
       function* (input) {
+        if (input.draft) {
+          return yield* error(
+            "createChangeRequest",
+            input.cwd,
+            "GitCafe does not support draft pull requests.",
+          );
+        }
         const target = yield* resolveTarget("createChangeRequest", {
           ...input,
           ...(input.target?.repository ? { repository: input.target.repository } : {}),

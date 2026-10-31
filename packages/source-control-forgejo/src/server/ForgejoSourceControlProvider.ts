@@ -377,7 +377,11 @@ export const make = Effect.gen(function* () {
           body: {
             base: input.target?.refName ?? input.baseRefName,
             head: owner ? `${owner}:${head}` : head,
-            title: input.title,
+            // Forgejo marks a pull request as a draft by its title prefix.
+            title:
+              input.draft && !/^(wip:|\[wip\])/i.test(input.title)
+                ? `WIP: ${input.title}`
+                : input.title,
             body: yield* fs.readFileString(input.bodyFile),
           },
         });

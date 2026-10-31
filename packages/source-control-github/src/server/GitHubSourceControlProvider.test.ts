@@ -506,6 +506,7 @@ describe("GitHubSourceControlProvider writes", () => {
         headSelector: "me:feature",
         title: "Title",
         bodyFile,
+        draft: true,
       });
       assert.strictEqual(requests[0]!.method, "POST");
       assert.strictEqual(requests[0]!.path, "repos/acme/web/pulls");
@@ -516,6 +517,7 @@ describe("GitHubSourceControlProvider writes", () => {
         title: "Title",
         body: "Body",
         maintainer_can_modify: true,
+        draft: true,
       });
     }).pipe(Effect.provide(Layer.merge(layer, NodeServices.layer)), Effect.scoped);
   });

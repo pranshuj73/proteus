@@ -252,6 +252,7 @@ export class AzureDevOpsCli extends Context.Service<
       readonly target?: SourceControlProvider.SourceControlRefSelector;
       readonly title: string;
       readonly bodyFile: string;
+      readonly draft?: boolean;
     }) => Effect.Effect<void, AzureDevOpsCliError>;
 
     readonly getDefaultBranch: (input: {
@@ -533,6 +534,7 @@ export const make = Effect.gen(function* () {
           input.title,
           "--description",
           `@${input.bodyFile}`,
+          ...(input.draft ? ["--draft", "true"] : []),
         ],
       }).pipe(Effect.asVoid);
     }),

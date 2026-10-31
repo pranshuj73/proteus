@@ -1,4 +1,4 @@
-import type { RoutineDefinition, RoutineStepId } from "@t3tools/contracts";
+import type { RoutineDefinition, RoutineStep, RoutineStepId } from "@t3tools/contracts";
 
 /**
  * Pure successor resolution for the lean executor. A step with `on` routes by
@@ -21,3 +21,9 @@ export const nextSteps = (
   if (step.next !== undefined) return step.next;
   return [];
 };
+
+export const DEFAULT_MAX_ITERATIONS = 10;
+
+/** Most times a step may run in one execution; loops are bounded by the target's `maxIterations`. */
+export const attemptLimit = (step: RoutineStep): number =>
+  step.maxIterations ?? DEFAULT_MAX_ITERATIONS;
