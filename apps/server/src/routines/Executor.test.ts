@@ -50,6 +50,7 @@ interface Fakes {
   readonly verdictText?: string;
   readonly verdictQueue?: Array<string>;
   readonly cleanWorktree?: boolean;
+  readonly judgeText?: string;
   readonly stuck?: boolean;
   readonly autoResume?: boolean;
   readonly continued?: Array<string>;
@@ -165,6 +166,12 @@ const withExecutor = <A, E>(
             }) =>
               Effect.gen(function* () {
                 fakes.continued?.push(continueThreadId ?? "");
+                if (title.startsWith("Resolve merge") || title.startsWith("Judge merge")) {
+                  return {
+                    threadId: ThreadId.make(title),
+                    verdictText: fakes.judgeText ?? "",
+                  };
+                }
                 if (title.startsWith("Council summary")) {
                   return { threadId: ThreadId.make("summary-thread"), verdictText: "- chose X" };
                 }
@@ -820,6 +827,24 @@ it.effect("write branches get their own worktrees and merge back in step order",
     }),
   );
 });
+
+it.effect("an approved agent resolution completes a conflicted merge and is recorded", () =>
+  withExecutor(
+    {
+      mergeConflict: true,
+      judgeText: "VERDICT: approved - both sides kept",
+      routine: fanOut(false),
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.error, null);
+        const flagged = settled.feed.flatMap((block) => block.recordCount);
+        assert.isTrue(flagged.some((count) => count > 0));
+      }),
+  ),
+);
 
 it.effect("a merge conflict fails the execution naming the branch and files", () => {
   const gitCalls: Array<string> = [];

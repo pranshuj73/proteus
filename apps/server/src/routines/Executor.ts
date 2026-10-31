@@ -58,6 +58,7 @@ import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
 import { SKILLS_DIR, hashSkillFolder, referencedSkills, skillDrift } from "./skills.ts";
 import * as RoutineStore from "./RoutineStore.ts";
 import {
+  abortMerge,
   checkpoint,
   commitAll,
   mergeBranch,
@@ -547,6 +548,56 @@ const make = Effect.gen(function* () {
           ),
         );
 
+      /** An agent resolves the in-progress merge and a judge in a fresh thread must approve it. */
+      const resolveConflict = Effect.fn("Executor.resolveConflict")(function* (
+        step: RoutineStep,
+        branch: string,
+        files: string,
+      ) {
+        const outcome = yield* Effect.exit(
+          Effect.gen(function* () {
+            const selection =
+              modelSelection ?? (yield* threads.resolveDefaultModel(initial.projectId));
+            const resolver = yield* threads.runAgentStep({
+              projectId: initial.projectId,
+              workspaceStrategy,
+              prompt: `A git merge of ${branch} is in progress in this worktree and conflicts in: ${files}. Resolve every conflict, keeping the intent of both sides. Stage the files but do not commit.`,
+              modelSelection: selection,
+              title: `Resolve merge: ${stepLabel(step)}`,
+            });
+            const judge = yield* threads.runAgentStep({
+              projectId: initial.projectId,
+              workspaceStrategy,
+              prompt: `Judge the staged resolution of a merge of ${branch} (conflicts in ${files}). Inspect it with git diff --cached. Do not change anything. End with a line:\nVERDICT: approved|rejected - <one-line reason>`,
+              modelSelection: selection,
+              title: `Judge merge: ${stepLabel(step)}`,
+              runtimeMode: "approval-required",
+              declineApprovals: true,
+            });
+            const approved = /^\s*verdict:\s*approved\b/im.test(judge.verdictText);
+            yield* repository.insertCouncilRecord({
+              id: `routine-council:merge:${judge.threadId}`,
+              executionId: initial.id,
+              stepId: step.id,
+              attempt: attempts.get(step.id) ?? 1,
+              threadId: resolver.threadId,
+              requestId: judge.threadId,
+              question: `Merge conflict in ${files}`,
+              answer: approved ? "Resolved by an agent" : "Resolution rejected by the judge",
+              rationale: judge.verdictText.trim().slice(-500),
+              confidence: approved ? "high" : "low",
+              independent: false,
+              createdAt: yield* nowIso,
+            });
+            if (approved) {
+              yield* commitAll(workspaceStrategy.worktreePath, `Merge ${branch}`);
+            }
+            return approved;
+          }),
+        );
+        return Exit.isSuccess(outcome) && outcome.value;
+      });
+
       /** Folds write branches back into the execution branch in step order. */
       const mergeBranches = Effect.fn("Executor.mergeBranches")(function* (
         runs: ReadonlyArray<StepRun>,
@@ -557,6 +608,14 @@ const make = Effect.gen(function* () {
           const merged = yield* mergeBranch(workspaceStrategy.worktreePath, run.branch.branch);
           if (!merged.merged) {
             const files = merged.files.length === 0 ? "unknown files" : merged.files.join(", ");
+            const resolved = yield* resolveConflict(run.step, run.branch.branch, files);
+            if (resolved) {
+              yield* git
+                .removeWorktree({ workspaceRoot, worktreePath: run.branch.worktreePath })
+                .pipe(Effect.ignore);
+              continue;
+            }
+            yield* abortMerge(workspaceStrategy.worktreePath);
             return `Merge conflict joining step "${run.step.id}" into ${workspaceStrategy.branch}: ${files}. Its work is kept on ${run.branch.branch}.`;
           }
           yield* git

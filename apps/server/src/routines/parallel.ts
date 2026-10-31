@@ -65,7 +65,11 @@ export const worktreeRisks = Effect.fn("RoutineParallel.worktreeRisks")(function
   ];
 });
 
-/** Merges a branch into the worktree's; a conflict is aborted and reported by file. */
+export const abortMerge = Effect.fn("RoutineParallel.abortMerge")(function* (cwd: string) {
+  yield* git(cwd, ["merge", "--abort"]);
+});
+
+/** Merges a branch into the worktree's; a conflict stays in progress and is reported by file. */
 export const mergeBranch = Effect.fn("RoutineParallel.mergeBranch")(function* (
   cwd: string,
   branch: string,
@@ -73,7 +77,6 @@ export const mergeBranch = Effect.fn("RoutineParallel.mergeBranch")(function* (
   const merge = yield* git(cwd, ["merge", "--no-ff", "--no-edit", branch]);
   if (merge.code === 0) return { merged: true };
   const conflicted = yield* git(cwd, ["diff", "--name-only", "--diff-filter=U"]);
-  yield* git(cwd, ["merge", "--abort"]);
   return {
     merged: false,
     files: conflicted.output
