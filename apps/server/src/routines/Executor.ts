@@ -62,6 +62,7 @@ import {
   mergeBranch,
   movedSince,
   restoreCheckpoint,
+  treeOf,
   worktreeRisks,
 } from "./parallel.ts";
 import { attemptLimit, nextSteps, resolveReady } from "./routing.ts";
@@ -354,6 +355,8 @@ const make = Effect.gen(function* () {
       const done = new Set<RoutineStepId>(seed?.done);
       const continueThreads = new Map<RoutineStepId, ThreadId>(seed?.continueThreads);
       const stepHeads = new Map<RoutineStepId, string>();
+      const lastLabels = new Map<RoutineStepId, string>();
+      const loopSeen = new Map<RoutineStepId, { readonly tree: string; readonly label?: string }>();
       const outputs = new Map<RoutineStepId, string>(seed?.outputs);
       // Attempts stay unique per row; retries only reset how many count toward the step's limit.
       const attemptBase = new Map<RoutineStepId, number>();
@@ -594,6 +597,29 @@ const make = Effect.gen(function* () {
 
         const head = yield* checkpoint(workspaceStrategy.worktreePath);
         for (const id of ready) stepHeads.set(id, head);
+
+        // A loop iteration that repeats its verdict on an identical tree cannot make progress.
+        let rewound = false;
+        for (const step of steps) {
+          if (step.maxIterations === undefined) continue;
+          const tree = yield* treeOf(workspaceStrategy.worktreePath, head);
+          const label = lastLabels.get(step.id);
+          const seen = loopSeen.get(step.id);
+          loopSeen.set(step.id, { tree, ...(label === undefined ? {} : { label }) });
+          if (label === undefined || seen?.tree !== tree || seen.label !== label) continue;
+          const decision = yield* park(
+            "needs_attention",
+            `Step "${step.id}" made no progress: it repeated "${label}" with no file changes.`,
+          );
+          if (decision.action === "restart") {
+            yield* rewindTo(decision.stepId);
+            ready = [decision.stepId];
+            waiting = [];
+            rewound = true;
+            break;
+          }
+        }
+        if (rewound) continue;
         yield* repository
           .saveFrontier(initial.id, {
             ready,
@@ -628,6 +654,7 @@ const make = Effect.gen(function* () {
             continue;
           }
           done.add(run.step.id);
+          lastLabels.set(run.step.id, run.result.verdict.label);
           reached.push(...nextSteps(definition, run.step.id, run.result.verdict.label));
         }
 

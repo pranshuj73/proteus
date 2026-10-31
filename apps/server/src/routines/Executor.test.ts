@@ -41,12 +41,15 @@ const testExecutables = (routine: unknown) =>
     routine as { readonly steps: ReadonlyArray<{ readonly argv?: ReadonlyArray<string> }> }
   ).steps.flatMap((step) => step.argv?.slice(0, 1) ?? []);
 
+let treeCounter = 0;
+
 interface Fakes {
   readonly routine: unknown;
   readonly exitCode?: number;
   readonly verdictText?: string;
   readonly verdictQueue?: Array<string>;
   readonly cleanWorktree?: boolean;
+  readonly stuck?: boolean;
   readonly autoResume?: boolean;
   readonly continued?: Array<string>;
   /** The agent step's thread asks this once; the answers it receives land in `answers`. */
@@ -119,6 +122,14 @@ const withExecutor = <A, E>(
                 if (argv[0] === "git") {
                   const args = argv.slice(5);
                   fakes.gitCalls?.push(`${cwd}: ${args.join(" ")}`);
+                  if (args[1]?.endsWith("^{tree}")) {
+                    treeCounter += 1;
+                    return {
+                      code: 0,
+                      output: fakes.stuck === true ? "same" : String(treeCounter),
+                      timedOut: false,
+                    };
+                  }
                   return {
                     code: args[0] === "merge" && fakes.mergeConflict === true ? 1 : 0,
                     output:
@@ -529,6 +540,37 @@ it.effect("retry, skip and pause steer a parked execution", () => {
       }),
   );
 });
+
+it.effect("a loop repeating its verdict with no file changes stops early", () =>
+  withExecutor(
+    {
+      stuck: true,
+      verdictText: "VERDICT: retry - still broken",
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "fix",
+            kind: "agent",
+            purpose: "Fix it",
+            maxIterations: 5,
+            verdict: { labels: ["retry", "done"] },
+            on: { retry: "fix", done: "$end" },
+          },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "needs_attention");
+        assert.include(settled.execution.error ?? "", "made no progress");
+        assert.equal(settled.steps.length, 2);
+      }),
+  ),
+);
 
 it.effect("an agent step with no valid verdict fails the step and execution", () =>
   withExecutor(

@@ -32,6 +32,11 @@ export const checkpoint = Effect.fn("RoutineParallel.checkpoint")(function* (cwd
   return (yield* git(cwd, ["rev-parse", "HEAD"])).output.trim();
 });
 
+/** Content id of a commit, unchanged when an iteration commits nothing new. */
+export const treeOf = Effect.fn("RoutineParallel.treeOf")(function* (cwd: string, commit: string) {
+  return (yield* git(cwd, ["rev-parse", `${commit}^{tree}`])).output.trim();
+});
+
 /** True when the worktree moved past `head`, either by commits or uncommitted changes. */
 export const movedSince = Effect.fn("RoutineParallel.movedSince")(function* (
   cwd: string,
