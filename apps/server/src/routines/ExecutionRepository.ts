@@ -1,6 +1,7 @@
 import {
   type ProjectId,
   RoutineDefinition,
+  RoutineCouncilRecord,
   RoutineError,
   RoutineExecution,
   type RoutineExecutionId,
@@ -65,6 +66,26 @@ export class ExecutionRepository extends Context.Service<
     readonly insertExecution: (execution: RoutineExecution) => Effect.Effect<void, RoutineError>;
     readonly updateExecution: (execution: RoutineExecution) => Effect.Effect<void, RoutineError>;
     readonly upsertStep: (step: ExecutionStepRecord) => Effect.Effect<void, RoutineError>;
+    readonly insertCouncilRecord: (
+      record: RoutineCouncilRecord,
+    ) => Effect.Effect<void, RoutineError>;
+    /** Without `stepId`, every record of the execution, oldest first. */
+    readonly listCouncilRecords: (input: {
+      readonly executionId: RoutineExecutionId;
+      readonly stepId?: string | undefined;
+      readonly attempt?: number | undefined;
+    }) => Effect.Effect<RoutineCouncilRecord[], RoutineError>;
+    readonly upsertSummary: (input: {
+      readonly executionId: RoutineExecutionId;
+      readonly stepId: string;
+      readonly attempt: number;
+      readonly summary: string;
+      readonly generatedAt: string;
+    }) => Effect.Effect<void, RoutineError>;
+    /** Keyed `stepId:attempt`. */
+    readonly listSummaries: (
+      executionId: RoutineExecutionId,
+    ) => Effect.Effect<ReadonlyMap<string, string>, RoutineError>;
     readonly listRunning: () => Effect.Effect<RoutineExecution[], RoutineError>;
     readonly listApprovedHashes: (
       projectId: ProjectId,
@@ -81,6 +102,7 @@ export class ExecutionRepository extends Context.Service<
 const decodeDefinitionJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeDefinitionJson = Schema.encodeSync(Schema.fromJsonString(RoutineDefinition));
 const decodeExecution = Schema.decodeUnknownEffect(RoutineExecution);
+const decodeCouncilRecord = Schema.decodeUnknownEffect(RoutineCouncilRecord);
 const decodeStep = Schema.decodeUnknownEffect(RoutineExecutionStep);
 
 const repositoryError = (message: string, cause: unknown): RoutineError =>
@@ -252,7 +274,96 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => repositoryError("Could not write a routine approval.", cause)),
     );
 
+  const insertCouncilRecord: ExecutionRepository["Service"]["insertCouncilRecord"] = (record) =>
+    sql`
+      INSERT INTO routine_council_records (
+        record_id, execution_id, step_id, attempt, thread_id, request_id, question, answer,
+        rationale, confidence, independent, created_at
+      ) VALUES (
+        ${record.id}, ${record.executionId}, ${record.stepId}, ${record.attempt},
+        ${record.threadId}, ${record.requestId}, ${record.question}, ${record.answer},
+        ${record.rationale}, ${record.confidence}, ${record.independent ? 1 : 0}, ${record.createdAt}
+      )
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not write a council record.", cause)),
+    );
+
+  const listCouncilRecords: ExecutionRepository["Service"]["listCouncilRecords"] = (input) =>
+    sql<{
+      readonly record_id: string;
+      readonly execution_id: string;
+      readonly step_id: string;
+      readonly attempt: number;
+      readonly thread_id: string;
+      readonly request_id: string;
+      readonly question: string;
+      readonly answer: string;
+      readonly rationale: string;
+      readonly confidence: string;
+      readonly independent: number;
+      readonly created_at: string;
+    }>`
+      SELECT record_id, execution_id, step_id, attempt, thread_id, request_id, question, answer,
+             rationale, confidence, independent, created_at
+      FROM routine_council_records
+      WHERE execution_id = ${input.executionId}
+        AND (${input.stepId ?? null} IS NULL OR step_id = ${input.stepId ?? null})
+        AND (${input.attempt ?? null} IS NULL OR attempt = ${input.attempt ?? null})
+      ORDER BY created_at ASC, record_id ASC
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.mapError((cause) => repositoryError("Could not list council records.", cause)),
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          decodeCouncilRecord({
+            id: row.record_id,
+            executionId: row.execution_id,
+            stepId: row.step_id,
+            attempt: row.attempt,
+            threadId: row.thread_id,
+            requestId: row.request_id,
+            question: row.question,
+            answer: row.answer,
+            rationale: row.rationale,
+            confidence: row.confidence,
+            independent: row.independent !== 0,
+            createdAt: row.created_at,
+          }).pipe(
+            Effect.mapError((cause) =>
+              repositoryError("Could not decode a council record.", cause),
+            ),
+          ),
+        ),
+      ),
+    );
+
+  const upsertSummary: ExecutionRepository["Service"]["upsertSummary"] = (input) =>
+    sql`
+      INSERT OR REPLACE INTO routine_step_summaries (
+        execution_id, step_id, attempt, summary, generated_at
+      ) VALUES (${input.executionId}, ${input.stepId}, ${input.attempt}, ${input.summary}, ${input.generatedAt})
+    `.pipe(
+      Effect.asVoid,
+      Effect.mapError((cause) => repositoryError("Could not write a step summary.", cause)),
+    );
+
+  const listSummaries: ExecutionRepository["Service"]["listSummaries"] = (executionId) =>
+    sql<{ readonly step_id: string; readonly attempt: number; readonly summary: string }>`
+      SELECT step_id, attempt, summary FROM routine_step_summaries WHERE execution_id = ${executionId}
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.mapError((cause) => repositoryError("Could not list step summaries.", cause)),
+      Effect.map(
+        (rows) => new Map(rows.map((row) => [`${row.step_id}:${row.attempt}`, row.summary])),
+      ),
+    );
+
   return ExecutionRepository.of({
+    insertCouncilRecord,
+    listCouncilRecords,
+    upsertSummary,
+    listSummaries,
     listRunning,
     listApprovedHashes,
     setApproval,

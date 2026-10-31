@@ -61,6 +61,7 @@ import * as RoutineExecutor from "../routines/Executor.ts";
 import * as RoutineGitAdapter from "../routines/adapters/git.ts";
 import * as RoutineProcessAdapter from "../routines/adapters/process.ts";
 import * as RoutineThreadAdapter from "../routines/adapters/threads.ts";
+import * as RoutineSkillPreflight from "../routines/steps/preflight.ts";
 import * as RoutineAuthoring from "../routines/RoutineAuthoring.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
@@ -303,6 +304,7 @@ const layerRoutineExecutorProvided = RoutineExecutor.layer.pipe(
       layerProjectService,
       RoutineExecutionRepository.layer,
       RoutineProcessAdapter.layer,
+      RoutineSkillPreflight.installerLayer.pipe(Layer.provide(RoutineProcessAdapter.layer)),
       RoutineGitAdapter.layer,
       RoutineThreadAdapter.layer.pipe(
         Layer.provide(
@@ -320,7 +322,7 @@ const layerRoutineServiceProvided = RoutineService.layer.pipe(
   Layer.provide(Layer.mergeAll(layerProjectService, layerRoutineExecutorProvided)),
 );
 const layerRoutineAuthoringProvided = RoutineAuthoring.layer.pipe(
-  Layer.provide(layerProjectService),
+  Layer.provide(Layer.mergeAll(layerProjectService, RoutineProcessAdapter.layer)),
 );
 const layerScratchThreadPromotionProvided = ScratchThreadPromotion.layer.pipe(
   Layer.provide(

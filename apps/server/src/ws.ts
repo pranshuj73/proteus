@@ -2148,6 +2148,8 @@ export const layerWsRpc = (
         [WS_METHODS.routinesApprove]: (input) => routines.approve(input),
         [WS_METHODS.routinesSubscribeExecutions]: (input) => routines.subscribeExecutions(input),
         [WS_METHODS.routinesSubscribeExecution]: (input) => routines.subscribeExecution(input),
+        [WS_METHODS.routinesCouncilRecords]: (input) => routines.councilRecords(input),
+        [WS_METHODS.routinesRegenerateSummary]: (input) => routines.regenerateSummary(input),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.setEnabled(input)),

@@ -55,4 +55,26 @@ const RoutineSaveTool = Tool.make("t3_routine_save", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true);
 
-export const RoutinesToolkit = Toolkit.make(RoutineValidateTool, RoutineSaveTool);
+const RoutineSkillsTool = Tool.make("t3_routine_skills", {
+  ...shared,
+  description:
+    "List skills installed in the project (.agents/skills) so a routine can reference them. Pass query to also search the skills registry via `npx skills find`. Propose skills to the user before referencing them as source@name; nothing is installed or pinned while authoring.",
+  parameters: Schema.Struct({
+    projectId: ProjectId,
+    query: Schema.optional(Schema.String),
+  }),
+  success: Schema.Struct({
+    installed: Schema.Array(
+      Schema.Struct({ name: Schema.String, description: Schema.String, path: Schema.String }),
+    ),
+    found: Schema.NullOr(Schema.String),
+  }),
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
+
+export const RoutinesToolkit = Toolkit.make(
+  RoutineValidateTool,
+  RoutineSaveTool,
+  RoutineSkillsTool,
+);

@@ -1,6 +1,17 @@
 import {
   type ModelSelection,
+  type OrchestrationV2UserInputQuestion,
   type ProjectId,
+  type ProviderUserInputAnswers,
+  type RoutineCouncilRecord,
+  type RoutineCouncilRecordsInput,
+  type RoutineCouncilRecordsResult,
+  type RoutineFeedBlock,
+  type RoutineRegenerateSummaryInput,
+  type RoutineRegenerateSummaryResult,
+  type RoutineExecutionStep,
+  type RoutineStep,
+  type ThreadId,
   type RoutineExecution,
   RoutineError,
   RoutineExecutionId,
@@ -32,15 +43,29 @@ import * as ProjectService from "../project/ProjectService.ts";
 import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/threads.ts";
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
+import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
 import * as RoutineStore from "./RoutineStore.ts";
 import { attemptLimit, nextSteps } from "./routing.ts";
 import {
+  buildCouncilPrompt,
+  buildSummaryPrompt,
+  DEFAULT_MAX_QUESTIONS_PER_STEP,
+  flaggedHighlights,
+  formatAnswer,
+  parseCouncilReply,
+} from "./steps/council.ts";
+import {
+  RoutineStepError,
   type RoutineStepContext,
   type RoutineStepRequirements,
   runStep,
 } from "./steps/StepRunner.ts";
 
 const RESTART_ERROR = "Interrupted by a server restart";
+const COUNCIL_TIMEOUT_MS = 10 * 60 * 1000;
+const SUMMARY_MAX_CHARS = 1500;
+const EARLIER_DECISIONS_LIMIT = 20;
+const EARLIER_OUTPUTS_LIMIT = 3;
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -66,6 +91,12 @@ export class Executor extends Context.Service<
     readonly subscribeExecution: (
       id: RoutineExecutionId,
     ) => Stream.Stream<RoutineExecutionResult, RoutineError>;
+    readonly councilRecords: (
+      input: RoutineCouncilRecordsInput,
+    ) => Effect.Effect<RoutineCouncilRecordsResult, RoutineError>;
+    readonly regenerateSummary: (
+      input: RoutineRegenerateSummaryInput,
+    ) => Effect.Effect<RoutineRegenerateSummaryResult, RoutineError>;
   }
 >()("t3/routines/Executor") {}
 
@@ -79,11 +110,14 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const layerScope = yield* Effect.scope;
   // Step runners resolve their adapters from context; capture it so forked walks outlive the request.
+  const skillInstaller = yield* RoutineSkillInstaller;
   const stepEnv = yield* Effect.context<RoutineStepRequirements>();
   // Subscribers only need the newest dirty signal; each one re-reads full state.
   const changesPubSub = yield* PubSub.sliding<void>(1);
 
   const runningFibers = new Map<RoutineExecutionId, Fiber.Fiber<void>>();
+  // Council threads are not step rows, so cancel needs its own list to stop them.
+  const councilThreads = new Map<RoutineExecutionId, Set<ThreadId>>();
 
   const notify = PubSub.publish(changesPubSub, undefined).pipe(Effect.asVoid);
 
@@ -100,6 +134,148 @@ const make = Effect.gen(function* () {
       Effect.ignore,
       Effect.andThen(notify),
     );
+
+  const stepLabel = (step: RoutineStep) => step.title ?? step.id;
+
+  /** Answers one step's thread questions through the council, recording each decision. */
+  const councilFor = (
+    execution: RoutineExecution,
+    step: RoutineStep,
+    attempt: number,
+    workspaceStrategy: RoutineWorkspaceStrategy,
+    author: ModelSelection,
+  ) =>
+    Effect.fn("Executor.council")(function* (
+      threadId: ThreadId,
+      question: {
+        readonly requestId: string;
+        readonly questions: ReadonlyArray<OrchestrationV2UserInputQuestion>;
+      },
+    ): Effect.fn.Return<ProviderUserInputAnswers, RoutineStepError> {
+      const toStepError = (cause: RoutineError) =>
+        new RoutineStepError({ message: cause.message, cause });
+      const { definition } = execution;
+      const earlier = yield* repository
+        .listCouncilRecords({ executionId: execution.id })
+        .pipe(Effect.mapError(toStepError));
+      const used = earlier.filter(
+        (record) => record.stepId === step.id && record.attempt === attempt,
+      ).length;
+      const cap = definition.council?.maxQuestionsPerStep ?? DEFAULT_MAX_QUESTIONS_PER_STEP;
+      if (used + question.questions.length > cap) {
+        return yield* new RoutineStepError({
+          message: `Council reached its limit of ${cap} questions for step "${step.id}"; a person needs to answer.`,
+        });
+      }
+      const steps = yield* repository.listSteps(execution.id).pipe(Effect.mapError(toStepError));
+      const council = yield* threads.resolveCouncilModel({ author, config: definition.council });
+      const prompt = buildCouncilPrompt({
+        routineName: definition.name,
+        routineDescription: definition.description,
+        brief: execution.brief,
+        stepLabel: stepLabel(step),
+        stepPurpose:
+          step.kind === "agent" ? step.purpose : step.kind === "skill" ? `Skill ${step.skill}` : "",
+        earlierDecisions: earlier.slice(-EARLIER_DECISIONS_LIMIT),
+        earlierOutputs: steps
+          .filter((row) => row.status === "done" && (row.outputExcerpt ?? "") !== "")
+          .slice(-EARLIER_OUTPUTS_LIMIT)
+          .map((row) => ({ stepId: row.stepId, excerpt: row.outputExcerpt ?? "" })),
+        questions: question.questions,
+      });
+      const councilSet = councilThreads.get(execution.id) ?? new Set<ThreadId>();
+      councilThreads.set(execution.id, councilSet);
+      const result = yield* threads.runAgentStep({
+        projectId: execution.projectId,
+        workspaceStrategy,
+        prompt,
+        modelSelection: council.selection,
+        title: `Council: ${stepLabel(step)}`,
+        timeoutMs: COUNCIL_TIMEOUT_MS,
+        runtimeMode: "approval-required",
+        declineApprovals: true,
+        onLaunched: (id) => Effect.sync(() => void councilSet.add(id)),
+      });
+      const reply = parseCouncilReply(result.verdictText, question.questions);
+      if (reply === null) {
+        return yield* new RoutineStepError({
+          message: `Council gave no usable answer for step "${step.id}".`,
+        });
+      }
+      const createdAt = yield* nowIso;
+      for (const item of question.questions) {
+        const unique = yield* crypto
+          .randomUUIDv4()
+          .pipe(
+            Effect.mapError(
+              (cause) => new RoutineStepError({ message: "Failed to create a record id.", cause }),
+            ),
+          );
+        const record: RoutineCouncilRecord = {
+          id: `routine-council:${unique}`,
+          executionId: execution.id,
+          stepId: step.id,
+          attempt,
+          threadId,
+          requestId: question.requestId,
+          question: item.question,
+          answer: formatAnswer(reply.answers[item.id]),
+          rationale: reply.rationale,
+          confidence: reply.confidence,
+          independent: council.independent,
+          createdAt,
+        };
+        yield* repository.insertCouncilRecord(record).pipe(Effect.mapError(toStepError));
+      }
+      yield* notify;
+      return reply.answers;
+    });
+
+  /** Writes the cached summary of a finished step's council decisions; no-op without any. */
+  const summarizeStep = Effect.fn("Executor.summarizeStep")(function* (
+    execution: RoutineExecution,
+    step: RoutineExecutionStep,
+  ) {
+    if (execution.worktreePath === null || execution.branch === null) return null;
+    const records = yield* repository.listCouncilRecords({
+      executionId: execution.id,
+      stepId: step.stepId,
+      attempt: step.attempt,
+    });
+    if (records.length === 0) return null;
+    const modelSelection = yield* threads.resolveDefaultModel(execution.projectId);
+    const result = yield* threads
+      .runAgentStep({
+        projectId: execution.projectId,
+        workspaceStrategy: {
+          type: "existing_worktree",
+          worktreePath: execution.worktreePath,
+          branch: execution.branch,
+        },
+        prompt: buildSummaryPrompt({
+          stepLabel: step.stepId,
+          verdict: step.verdict,
+          records,
+        }),
+        modelSelection,
+        title: `Council summary: ${step.stepId}`,
+        timeoutMs: COUNCIL_TIMEOUT_MS,
+        runtimeMode: "approval-required",
+        declineApprovals: true,
+      })
+      .pipe(Effect.mapError((cause) => new RoutineError({ message: cause.message, cause })));
+    const summary = result.verdictText.trim().slice(0, SUMMARY_MAX_CHARS);
+    if (summary === "") return null;
+    yield* repository.upsertSummary({
+      executionId: execution.id,
+      stepId: step.stepId,
+      attempt: step.attempt,
+      summary,
+      generatedAt: yield* nowIso,
+    });
+    yield* notify;
+    return summary;
+  });
 
   const runExecution = Effect.fn("Executor.runExecution")(
     function* (
@@ -167,6 +343,17 @@ const make = Effect.gen(function* () {
           runStep(step, {
             ...stepContext,
             onThreadLaunched: (threadId) => persistStep({ ...running, threadId }),
+            ...(modelSelection === undefined
+              ? {}
+              : {
+                  answerQuestion: councilFor(
+                    initial,
+                    step,
+                    attempt,
+                    workspaceStrategy,
+                    modelSelection,
+                  ),
+                }),
           }),
         );
         const finishedAt = yield* nowIso;
@@ -189,6 +376,18 @@ const make = Effect.gen(function* () {
           error,
           finishedAt,
         });
+        if (step.kind === "agent" || step.kind === "skill") {
+          const finished: ExecutionStepRecord = {
+            ...running,
+            status: error === null ? "done" : "failed",
+            verdict: result?.verdict ?? null,
+            finishedAt,
+          };
+          yield* summarizeStep(initial, finished).pipe(
+            Effect.catch((cause) => Effect.logWarning("Council summary failed", { cause })),
+            Effect.forkIn(layerScope),
+          );
+        }
 
         if (error !== null || result === undefined) {
           if (step.onError !== undefined) {
@@ -330,6 +529,23 @@ const make = Effect.gen(function* () {
       baseRef: "HEAD",
       branch: `routine/${input.routineId}-${unique.slice(0, 8)}`,
     });
+    yield* runSkillPreflight({
+      worktreePath: worktree.worktreePath,
+      definition,
+      providers: modelSelection === undefined ? [] : [modelSelection.instanceId],
+    }).pipe(
+      Effect.provideService(RoutineSkillInstaller, skillInstaller),
+      Effect.provideContext(stepEnv),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Crypto.Crypto, crypto),
+      Effect.mapError(
+        (error) =>
+          new RoutineError({
+            message: `Skill preflight failed: ${error.message}`,
+            routineId: input.routineId,
+          }),
+      ),
+    );
     const createdAt = yield* nowIso;
     const execution: RoutineExecution = {
       id: RoutineExecutionId.make(`routine-execution:${unique}`),
@@ -377,6 +593,10 @@ const make = Effect.gen(function* () {
         );
       }
     }
+    for (const threadId of councilThreads.get(id) ?? []) {
+      yield* threads.stopThread({ projectId: execution.projectId, threadId }).pipe(Effect.ignore);
+    }
+    councilThreads.delete(id);
     const finishedAt = yield* nowIso;
     for (const step of steps) {
       if (step.status === "running") {
@@ -405,7 +625,51 @@ const make = Effect.gen(function* () {
       return yield* new RoutineError({ message: `Routine execution ${id} not found.` });
     }
     const steps = yield* repository.listSteps(id);
-    return { execution: execution.value, steps };
+    const records = yield* repository.listCouncilRecords({ executionId: id });
+    const summaries = yield* repository.listSummaries(id);
+    // Newest first; a step that has not started has no row, so it has no block.
+    const feed = steps
+      .map((step): RoutineFeedBlock => {
+        const own = records.filter(
+          (record) => record.stepId === step.stepId && record.attempt === step.attempt,
+        );
+        return {
+          stepId: step.stepId,
+          attempt: step.attempt,
+          stepStatus: step.status,
+          verdict: step.verdict,
+          summary: summaries.get(`${step.stepId}:${step.attempt}`) ?? null,
+          recordCount: own.length,
+          flagged: flaggedHighlights(own),
+        };
+      })
+      .reverse();
+    return { execution: execution.value, steps, feed };
+  });
+
+  const councilRecords: Executor["Service"]["councilRecords"] = Effect.fn(
+    "Executor.councilRecords",
+  )(function* (input) {
+    return {
+      records: yield* repository.listCouncilRecords({
+        executionId: input.executionId,
+        stepId: input.stepId,
+        attempt: input.attempt,
+      }),
+    };
+  });
+
+  const regenerateSummary: Executor["Service"]["regenerateSummary"] = Effect.fn(
+    "Executor.regenerateSummary",
+  )(function* (input) {
+    const { execution, steps } = yield* readExecution(input.executionId);
+    const step = steps.find(
+      (candidate) => candidate.stepId === input.stepId && candidate.attempt === input.attempt,
+    );
+    if (step === undefined || step.status === "running") {
+      return yield* new RoutineError({ message: "That step has no finished run to summarize." });
+    }
+    return { summary: yield* summarizeStep(execution, step) };
   });
 
   const subscribeTo = <A>(read: Effect.Effect<A, RoutineError>) =>
@@ -460,6 +724,8 @@ const make = Effect.gen(function* () {
     cancel,
     subscribeExecutions,
     subscribeExecution,
+    councilRecords,
+    regenerateSummary,
   });
 });
 

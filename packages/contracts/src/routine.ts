@@ -97,6 +97,8 @@ export type RoutineStep = typeof RoutineStep.Type;
 export const RoutineCouncilConfig = Schema.Struct({
   provider: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(TrimmedNonEmptyString),
+  /** Questions answered per step before the step stops; defaults to 5. */
+  maxQuestionsPerStep: Schema.optional(PositiveInt),
 });
 export type RoutineCouncilConfig = typeof RoutineCouncilConfig.Type;
 
@@ -197,6 +199,52 @@ export const RoutineExecutionStep = Schema.Struct({
 });
 export type RoutineExecutionStep = typeof RoutineExecutionStep.Type;
 
+export const RoutineCouncilConfidence = Schema.Literals(["high", "medium", "low"]);
+export type RoutineCouncilConfidence = typeof RoutineCouncilConfidence.Type;
+
+/** One question the council answered on the user's behalf. */
+export const RoutineCouncilRecord = Schema.Struct({
+  id: Schema.String,
+  executionId: RoutineExecutionId,
+  stepId: RoutineStepId,
+  attempt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  /** The step thread that asked. */
+  threadId: ThreadId,
+  /** The runtime request the council answered. */
+  requestId: Schema.String,
+  question: Schema.String,
+  answer: Schema.String,
+  rationale: Schema.String,
+  confidence: RoutineCouncilConfidence,
+  /** False when the council ran on the same model as the step author. */
+  independent: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+export type RoutineCouncilRecord = typeof RoutineCouncilRecord.Type;
+
+/** A record the feed surfaces without opening the full list; text is truncated. */
+export const RoutineCouncilHighlight = Schema.Struct({
+  recordId: Schema.String,
+  question: Schema.String,
+  answer: Schema.String,
+  confidence: RoutineCouncilConfidence,
+});
+export type RoutineCouncilHighlight = typeof RoutineCouncilHighlight.Type;
+
+/** One block of the sidebar feed. Steps that have not started have no block. */
+export const RoutineFeedBlock = Schema.Struct({
+  stepId: RoutineStepId,
+  attempt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  stepStatus: RoutineStepRunStatus,
+  verdict: Schema.NullOr(RoutineVerdict),
+  /** Cached summary of the critical council decisions; null until generated. */
+  summary: Schema.NullOr(Schema.String),
+  recordCount: NonNegativeInt,
+  /** Low-confidence answers, always shown. */
+  flagged: Schema.Array(RoutineCouncilHighlight),
+});
+export type RoutineFeedBlock = typeof RoutineFeedBlock.Type;
+
 export const RoutineExecution = Schema.Struct({
   id: RoutineExecutionId,
   projectId: ProjectId,
@@ -267,8 +315,29 @@ export type RoutineExecutionInput = typeof RoutineExecutionInput.Type;
 export const RoutineExecutionResult = Schema.Struct({
   execution: RoutineExecution,
   steps: ForwardCompatibleArray(RoutineExecutionStep),
+  feed: ForwardCompatibleArray(RoutineFeedBlock),
 });
 export type RoutineExecutionResult = typeof RoutineExecutionResult.Type;
+
+export const RoutineCouncilRecordsInput = Schema.Struct({
+  executionId: RoutineExecutionId,
+  stepId: RoutineStepId,
+  attempt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+});
+export type RoutineCouncilRecordsInput = typeof RoutineCouncilRecordsInput.Type;
+
+export const RoutineCouncilRecordsResult = Schema.Struct({
+  records: ForwardCompatibleArray(RoutineCouncilRecord),
+});
+export type RoutineCouncilRecordsResult = typeof RoutineCouncilRecordsResult.Type;
+
+export const RoutineRegenerateSummaryInput = RoutineCouncilRecordsInput;
+export type RoutineRegenerateSummaryInput = typeof RoutineRegenerateSummaryInput.Type;
+
+export const RoutineRegenerateSummaryResult = Schema.Struct({
+  summary: Schema.NullOr(Schema.String),
+});
+export type RoutineRegenerateSummaryResult = typeof RoutineRegenerateSummaryResult.Type;
 
 /**
  * Model-facing guidance for drafting a routine from a user's use case. Shared by

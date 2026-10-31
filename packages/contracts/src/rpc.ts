@@ -377,6 +377,8 @@ import {
   RoutineApproveResult,
   RoutineCancelInput,
   RoutineCancelResult,
+  RoutineCouncilRecordsInput,
+  RoutineCouncilRecordsResult,
   RoutineError,
   RoutineExecutionInput,
   RoutineExecutionResult,
@@ -384,6 +386,8 @@ import {
   RoutineExecutionsResult,
   RoutineListInput,
   RoutineListResult,
+  RoutineRegenerateSummaryInput,
+  RoutineRegenerateSummaryResult,
   RoutineStartInput,
   RoutineStartResult,
 } from "./routine.ts";
@@ -563,6 +567,8 @@ export const WS_METHODS = {
   routinesApprove: "routines.approve",
   routinesSubscribeExecutions: "routines.subscribeExecutions",
   routinesSubscribeExecution: "routines.subscribeExecution",
+  routinesCouncilRecords: "routines.councilRecords",
+  routinesRegenerateSummary: "routines.regenerateSummary",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1976,6 +1982,18 @@ const WsRoutinesCancelRpc = Rpc.make(WS_METHODS.routinesCancel, {
   error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
 });
 
+const WsRoutinesCouncilRecordsRpc = Rpc.make(WS_METHODS.routinesCouncilRecords, {
+  payload: RoutineCouncilRecordsInput,
+  success: RoutineCouncilRecordsResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+});
+
+const WsRoutinesRegenerateSummaryRpc = Rpc.make(WS_METHODS.routinesRegenerateSummary, {
+  payload: RoutineRegenerateSummaryInput,
+  success: RoutineRegenerateSummaryResult,
+  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+});
+
 const WsRoutinesSubscribeExecutionsRpc = Rpc.make(WS_METHODS.routinesSubscribeExecutions, {
   payload: RoutineExecutionsInput,
   success: RoutineExecutionsResult,
@@ -2078,6 +2096,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoutinesStartRpc,
   WsRoutinesCancelRpc,
   WsRoutinesApproveRpc,
+  WsRoutinesCouncilRecordsRpc,
+  WsRoutinesRegenerateSummaryRpc,
   WsRoutinesSubscribeExecutionsRpc,
   WsRoutinesSubscribeExecutionRpc,
   WsServerReportClientActivityRpc,

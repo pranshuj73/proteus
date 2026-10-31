@@ -1,4 +1,8 @@
 import {
+  type RoutineCouncilRecordsInput,
+  type RoutineCouncilRecordsResult,
+  type RoutineRegenerateSummaryInput,
+  type RoutineRegenerateSummaryResult,
   type RoutineExecutionInput,
   type RoutineExecutionResult,
   type RoutineExecutionsInput,
@@ -42,6 +46,12 @@ export class RoutineService extends Context.Service<
     readonly subscribeExecution: (
       input: RoutineExecutionInput,
     ) => Stream.Stream<RoutineExecutionResult, RoutineError>;
+    readonly councilRecords: (
+      input: RoutineCouncilRecordsInput,
+    ) => Effect.Effect<RoutineCouncilRecordsResult, RoutineError>;
+    readonly regenerateSummary: (
+      input: RoutineRegenerateSummaryInput,
+    ) => Effect.Effect<RoutineRegenerateSummaryResult, RoutineError>;
   }
 >()("t3/routines/RoutineService") {}
 
@@ -93,6 +103,8 @@ const make = Effect.gen(function* () {
     ),
     subscribeExecutions: (input) => executor.subscribeExecutions(input.projectId),
     subscribeExecution: (input) => executor.subscribeExecution(input.executionId),
+    councilRecords: executor.councilRecords,
+    regenerateSummary: executor.regenerateSummary,
   });
 });
 

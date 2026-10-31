@@ -100,6 +100,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.routinesApprove]: "routines",
   [WS_METHODS.routinesSubscribeExecutions]: "routines",
   [WS_METHODS.routinesSubscribeExecution]: "routines",
+  [WS_METHODS.routinesCouncilRecords]: "routines",
+  [WS_METHODS.routinesRegenerateSummary]: "routines",
   [WS_METHODS.secretsAnswerRequest]: "secrets",
   [WS_METHODS.guestShareCreate]: "guest-share",
   [WS_METHODS.cloudGetRelayClientStatus]: "cloud",

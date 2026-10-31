@@ -19,6 +19,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { RoutineCouncilFeed } from "./RoutineCouncilFeed";
 import { RoutineGraph } from "./RoutineGraph";
 
 type BadgeVariant = ComponentProps<typeof Badge>["variant"];
@@ -111,7 +112,7 @@ export function RoutineExecutionView({
     return <p className="text-2xs text-muted-foreground">Loading run…</p>;
   }
 
-  const { execution, steps } = executionQuery.data;
+  const { execution, steps, feed } = executionQuery.data;
   const stepStatus = new Map<string, RoutineStepRunStatus>();
   for (const step of steps) stepStatus.set(step.stepId, step.status);
 
@@ -132,52 +133,55 @@ export function RoutineExecutionView({
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-background p-3">
-      <div className="flex items-center gap-2">
-        <Badge variant={EXECUTION_BADGE[execution.status].variant} size="sm">
-          {EXECUTION_BADGE[execution.status].label}
-        </Badge>
-        <span className="min-w-0 flex-1" />
-        {execution.status === "running" ? (
-          <Button
-            size="compact"
-            variant="outline"
-            disabled={cancelling}
-            onClick={() => void cancelRun()}
-          >
-            Cancel
-          </Button>
-        ) : null}
-      </div>
-      {execution.worktreePath === null && execution.branch === null ? null : (
-        <div className="flex flex-col gap-0.5 text-2xs text-muted-foreground">
-          {execution.worktreePath === null ? null : (
-            <span className="break-all font-mono">Worktree: {execution.worktreePath}</span>
-          )}
-          {execution.branch === null ? null : (
-            <span className="break-all font-mono">Branch: {execution.branch}</span>
-          )}
+    <div className="flex flex-col gap-3 rounded-lg border bg-background p-3 lg:flex-row">
+      <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <Badge variant={EXECUTION_BADGE[execution.status].variant} size="sm">
+            {EXECUTION_BADGE[execution.status].label}
+          </Badge>
+          <span className="min-w-0 flex-1" />
+          {execution.status === "running" ? (
+            <Button
+              size="compact"
+              variant="outline"
+              disabled={cancelling}
+              onClick={() => void cancelRun()}
+            >
+              Cancel
+            </Button>
+          ) : null}
         </div>
-      )}
-      <RoutineGraph definition={execution.definition} stepStatus={stepStatus} />
-      {execution.error === null ? null : (
-        <p className="rounded-md border border-destructive/24 bg-destructive/4 p-2 text-2xs text-destructive-foreground dark:bg-destructive/8">
-          {execution.error}
-        </p>
-      )}
-      {steps.length === 0 ? (
-        <p className="text-2xs text-muted-foreground">No steps have run yet.</p>
-      ) : (
-        <ul className="flex flex-col gap-1.5">
-          {steps.map((step) => (
-            <RoutineStepRow
-              key={`${step.stepId}:${step.attempt}`}
-              step={step}
-              environmentId={environmentId}
-            />
-          ))}
-        </ul>
-      )}
+        {execution.worktreePath === null && execution.branch === null ? null : (
+          <div className="flex flex-col gap-0.5 text-2xs text-muted-foreground">
+            {execution.worktreePath === null ? null : (
+              <span className="break-all font-mono">Worktree: {execution.worktreePath}</span>
+            )}
+            {execution.branch === null ? null : (
+              <span className="break-all font-mono">Branch: {execution.branch}</span>
+            )}
+          </div>
+        )}
+        <RoutineGraph definition={execution.definition} stepStatus={stepStatus} />
+        {execution.error === null ? null : (
+          <p className="rounded-md border border-destructive/24 bg-destructive/4 p-2 text-2xs text-destructive-foreground dark:bg-destructive/8">
+            {execution.error}
+          </p>
+        )}
+        {steps.length === 0 ? (
+          <p className="text-2xs text-muted-foreground">No steps have run yet.</p>
+        ) : (
+          <ul className="flex flex-col gap-1.5">
+            {steps.map((step) => (
+              <RoutineStepRow
+                key={`${step.stepId}:${step.attempt}`}
+                step={step}
+                environmentId={environmentId}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+      <RoutineCouncilFeed environmentId={environmentId} executionId={executionId} feed={feed} />
     </div>
   );
 }

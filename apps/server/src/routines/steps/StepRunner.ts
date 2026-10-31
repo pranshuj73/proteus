@@ -1,5 +1,6 @@
 import {
   type ModelSelection,
+  type ProviderUserInputAnswers,
   type ProjectId,
   type RoutineStep,
   type RoutineVerdict,
@@ -11,7 +12,11 @@ import * as Schema from "effect/Schema";
 
 import type { RoutineGitProvisioner } from "../adapters/git.ts";
 import type { RoutineProcessRunner } from "../adapters/process.ts";
-import type { RoutineThreadRunner, RoutineWorkspaceStrategy } from "../adapters/threads.ts";
+import type {
+  RoutineThreadQuestion,
+  RoutineThreadRunner,
+  RoutineWorkspaceStrategy,
+} from "../adapters/threads.ts";
 import { runAgentOrSkillStep } from "./agent.ts";
 import { runActionStep } from "./action.ts";
 import { runCommandStep } from "./command.ts";
@@ -30,6 +35,13 @@ export interface RoutineStepContext {
   readonly routineName?: string | undefined;
   readonly workspaceStrategy: RoutineWorkspaceStrategy;
   readonly modelSelection?: ModelSelection | undefined;
+  /** The council: answers a step thread's user-input request so the run does not wait on a human. */
+  readonly answerQuestion?:
+    | ((
+        threadId: ThreadId,
+        question: RoutineThreadQuestion,
+      ) => Effect.Effect<ProviderUserInputAnswers, RoutineStepError>)
+    | undefined;
   readonly onThreadLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
 }
 

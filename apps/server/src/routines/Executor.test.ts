@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  type OrchestrationV2UserInputQuestion,
   type Project,
   ProjectId,
   ProviderInstanceId,
@@ -26,6 +27,7 @@ import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineProcessRunner } from "./adapters/process.ts";
 import { RoutineThreadRunner } from "./adapters/threads.ts";
 import * as ExecutionRepository from "./ExecutionRepository.ts";
+import { RoutineSkillInstaller } from "./steps/preflight.ts";
 import { Executor, layer as executorLayer } from "./Executor.ts";
 
 const projectId = ProjectId.make("routine-project");
@@ -36,6 +38,10 @@ interface Fakes {
   readonly routine: unknown;
   readonly exitCode?: number;
   readonly verdictText?: string;
+  /** The agent step's thread asks this once; the answers it receives land in `answers`. */
+  readonly question?: ReadonlyArray<OrchestrationV2UserInputQuestion>;
+  readonly answers?: Array<unknown>;
+  readonly councilText?: string;
   readonly seen?: Array<string>;
   readonly gate?: Deferred.Deferred<void>;
   readonly stopped?: Array<string>;
@@ -98,8 +104,34 @@ const withExecutor = <A, E>(
           }),
           Layer.mock(RoutineThreadRunner)({
             stopThread: ({ threadId }) => Effect.sync(() => void fakes.stopped?.push(threadId)),
-            runAgentStep: ({ prompt, modelSelection, workspaceStrategy, onLaunched }) =>
+            resolveCouncilModel: ({ author }) =>
+              Effect.succeed({ selection: author, independent: false }),
+            runAgentStep: ({
+              prompt,
+              modelSelection,
+              workspaceStrategy,
+              onLaunched,
+              onQuestion,
+              title,
+            }) =>
               Effect.gen(function* () {
+                if (title.startsWith("Council summary")) {
+                  return { threadId: ThreadId.make("summary-thread"), verdictText: "- chose X" };
+                }
+                if (title.startsWith("Council:")) {
+                  return {
+                    threadId: ThreadId.make("council-thread"),
+                    verdictText: fakes.councilText ?? "",
+                  };
+                }
+                if (fakes.question !== undefined && onQuestion !== undefined) {
+                  fakes.answers?.push(
+                    yield* onQuestion(ThreadId.make("routine-thread"), {
+                      requestId: "request-1",
+                      questions: fakes.question,
+                    }),
+                  );
+                }
                 if (onLaunched !== undefined) yield* onLaunched(ThreadId.make("routine-thread"));
                 if (fakes.launched !== undefined)
                   yield* Deferred.succeed(fakes.launched, undefined);
@@ -120,6 +152,7 @@ const withExecutor = <A, E>(
                 model: "default-model",
               }),
           }),
+          Layer.mock(RoutineSkillInstaller)({}),
           NodeCrypto.layer,
         ),
       ),
@@ -576,3 +609,106 @@ it.effect("executions left running by a restart are failed and keep their worktr
       }),
   );
 });
+
+const askRoutine = {
+  version: 1,
+  name: "demo",
+  council: { maxQuestionsPerStep: 1 },
+  steps: [{ id: "review", kind: "agent", purpose: "Review", verdict: { labels: ["ok"] } }],
+};
+const question: OrchestrationV2UserInputQuestion = {
+  id: "scope",
+  header: "Scope",
+  question: "Which scope?",
+  options: [{ label: "narrow", description: "Only the diff" }],
+};
+
+it.effect("the council answers an agent question, records it, and caches a feed summary", () => {
+  const answers: Array<unknown> = [];
+  return withExecutor(
+    {
+      routine: askRoutine,
+      verdictText: "VERDICT: ok - fine",
+      question: [question],
+      answers,
+      councilText:
+        'Thinking.\nCOUNCIL: {"answers":{"scope":"narrow"},"rationale":"Smallest change","confidence":"low"}',
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "ship it" });
+        yield* awaitSettled(executor, execution.id);
+        assert.deepEqual(answers, [{ scope: "narrow" }]);
+
+        const { records } = yield* executor.councilRecords({
+          executionId: execution.id,
+          stepId: RoutineStepId.make("review"),
+          attempt: 1,
+        });
+        assert.deepEqual(
+          records.map((record) => [
+            record.question,
+            record.answer,
+            record.confidence,
+            record.independent,
+          ]),
+          [["Which scope?", "narrow", "low", false]],
+        );
+
+        const withSummary = yield* executor.subscribeExecution(execution.id).pipe(
+          Stream.filter((snapshot) => snapshot.feed[0]?.summary != null),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        const block = withSummary.feed[0];
+        assert.equal(block?.summary, "- chose X");
+        assert.equal(block?.recordCount, 1);
+        assert.deepEqual(
+          block?.flagged.map((entry) => entry.answer),
+          ["narrow"],
+        );
+      }),
+  );
+});
+
+it.effect("a question beyond the per-step cap fails the step instead of waiting", () =>
+  withExecutor(
+    {
+      routine: askRoutine,
+      verdictText: "VERDICT: ok - fine",
+      question: [question, { ...question, id: "depth" }],
+      answers: [],
+      councilText: "no reply line",
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "failed");
+        assert.match(settled.execution.error ?? "", /limit of 1 questions/);
+        assert.deepEqual(
+          settled.feed.map((block) => block.recordCount),
+          [0],
+        );
+      }),
+  ),
+);
+
+it.effect("an unparseable council reply fails the step", () =>
+  withExecutor(
+    {
+      routine: { ...askRoutine, council: undefined },
+      verdictText: "VERDICT: ok - fine",
+      question: [question],
+      answers: [],
+      councilText: "I am not sure.",
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "failed");
+        assert.match(settled.execution.error ?? "", /no usable answer/);
+      }),
+  ),
+);

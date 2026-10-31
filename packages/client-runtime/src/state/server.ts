@@ -1300,6 +1300,14 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:execution",
       tag: WS_METHODS.routinesSubscribeExecution,
     }),
+    routineCouncilRecords: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:routines:council-records",
+      tag: WS_METHODS.routinesCouncilRecords,
+    }),
+    regenerateRoutineSummary: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:regenerate-summary",
+      tag: WS_METHODS.routinesRegenerateSummary,
+    }),
     startRoutine: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:routines:start",
       tag: WS_METHODS.routinesStart,

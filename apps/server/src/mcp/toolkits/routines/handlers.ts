@@ -15,6 +15,12 @@ const handlers = {
       return yield* authoring.validateDefinition(input).pipe(Effect.mapError(routineFailure));
     }),
   ),
+  t3_routine_skills: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      const authoring = yield* RoutineAuthoring.RoutineAuthoring;
+      return yield* authoring.listSkills(input).pipe(Effect.mapError(routineFailure));
+    }),
+  ),
   t3_routine_save: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       const authoring = yield* RoutineAuthoring.RoutineAuthoring;
