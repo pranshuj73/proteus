@@ -353,6 +353,7 @@ const make = Effect.gen(function* () {
       const attempts = new Map<RoutineStepId, number>(seed?.attempts);
       const done = new Set<RoutineStepId>(seed?.done);
       const continueThreads = new Map<RoutineStepId, ThreadId>(seed?.continueThreads);
+      const stepHeads = new Map<RoutineStepId, string>();
       const outputs = new Map<RoutineStepId, string>(seed?.outputs);
       // Attempts stay unique per row; retries only reset how many count toward the step's limit.
       const attemptBase = new Map<RoutineStepId, number>();
@@ -391,6 +392,13 @@ const make = Effect.gen(function* () {
           resetAttempts(step.id);
         }
       };
+
+      /** Rewinds the worktree to where `id` last began, so reruns do not stack on old output. */
+      const rewindTo = Effect.fn("Executor.rewindTo")(function* (id: RoutineStepId) {
+        invalidateFrom(id);
+        const head = stepHeads.get(id);
+        if (head !== undefined) yield* restoreCheckpoint(workspaceStrategy.worktreePath, head);
+      });
 
       interface StepRun {
         readonly step: RoutineStep;
@@ -435,6 +443,7 @@ const make = Effect.gen(function* () {
         yield* persistStep(running);
 
         let branch: RoutineWorkspaceStrategy | null = null;
+        let launchedThread: ThreadId | null = null;
         const outcome = yield* Effect.exit(
           Effect.gen(function* () {
             if (isolate) {
@@ -466,7 +475,11 @@ const make = Effect.gen(function* () {
                 const output = outputs.get(stepId);
                 return output === undefined ? [] : [{ stepId, output }];
               }),
-              onThreadLaunched: (threadId) => persistStep({ ...running, threadId }),
+              onThreadLaunched: (threadId) =>
+                Effect.suspend(() => {
+                  launchedThread = threadId;
+                  return persistStep({ ...running, threadId });
+                }),
               ...(modelSelection === undefined
                 ? {}
                 : {
@@ -492,7 +505,7 @@ const make = Effect.gen(function* () {
           status: error === null ? "done" : "failed",
           verdict: result?.verdict ?? null,
           outputExcerpt: result?.outputExcerpt ?? null,
-          threadId: result?.threadId ?? null,
+          threadId: result?.threadId ?? launchedThread,
           error,
           finishedAt,
         });
@@ -567,7 +580,7 @@ const make = Effect.gen(function* () {
                 : null,
           );
           if (decision.action === "restart") {
-            invalidateFrom(decision.stepId);
+            yield* rewindTo(decision.stepId);
             ready = [decision.stepId];
             waiting = [];
           }
@@ -579,9 +592,8 @@ const make = Effect.gen(function* () {
           steps.push(step);
         }
 
-        const head = steps.some((step) => step.kind === "agent" || step.kind === "skill")
-          ? yield* checkpoint(workspaceStrategy.worktreePath)
-          : null;
+        const head = yield* checkpoint(workspaceStrategy.worktreePath);
+        for (const id of ready) stepHeads.set(id, head);
         yield* repository
           .saveFrontier(initial.id, {
             ready,
@@ -644,7 +656,7 @@ const make = Effect.gen(function* () {
             done.add(failed.step.id);
             reached.push(...nextSteps(definition, failed.step.id, decision.label));
           } else if (decision.action === "restart") {
-            invalidateFrom(decision.stepId);
+            yield* rewindTo(decision.stepId);
             reached.splice(0, reached.length, decision.stepId);
             restarted = true;
           } else {

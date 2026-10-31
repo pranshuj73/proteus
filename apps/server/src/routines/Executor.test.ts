@@ -409,6 +409,8 @@ it.effect(
   },
 );
 
+const restartCalls: Array<string> = [];
+
 it.effect(
   "pause holds after the current step and restart reruns it; removing an executable pauses",
   () =>
@@ -419,6 +421,7 @@ it.effect(
         {
           gate,
           launched,
+          gitCalls: restartCalls,
           routine: {
             version: 1,
             name: "demo",
@@ -462,6 +465,7 @@ it.effect(
               finished.steps.map((step) => `${step.stepId}:${step.attempt}`),
               ["build:1", "review:1", "review:2"],
             );
+            assert.isTrue(restartCalls.some((call) => call.includes("reset --hard")));
 
             yield* raw.removeExecutable({ projectId, executable: "make" });
             const second = yield* raw
@@ -549,6 +553,7 @@ it.effect("an agent step with no valid verdict fails the step and execution", ()
         const settled = yield* awaitSettled(executor, execution.id);
         assert.equal(settled.execution.status, "failed");
         assert.include(settled.steps[0]?.error ?? "", "approved, changes");
+        assert.equal(settled.steps[0]?.threadId, ThreadId.make("routine-thread"));
       }),
   ),
 );
@@ -736,7 +741,10 @@ it.effect("read-only branches share the worktree and the join runs after both", 
       const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
       const settled = yield* awaitSettled(executor, execution.id);
       assert.equal(settled.execution.status, "awaiting_review");
-      assert.deepEqual(gitCalls, []);
+      assert.deepEqual(
+        gitCalls.filter((call) => call.includes("merge")),
+        [],
+      );
       assert.equal(seen.at(-1), "ship @ /worktrees/routine");
       assert.sameMembers(seen.slice(1, 3), ["a @ /worktrees/routine", "b @ /worktrees/routine"]);
       assert.deepEqual(settled.steps.map((step) => step.stepId).sort(), [

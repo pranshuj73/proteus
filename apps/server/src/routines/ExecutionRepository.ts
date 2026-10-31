@@ -55,7 +55,7 @@ export const WalkFrontier = Schema.Struct({
   waiting: Schema.Array(RoutineStepId),
   /** Attempts per step when this set began; a higher done row finished within the set. */
   attempts: Schema.Record(Schema.String, Schema.Number),
-  /** Checkpoint commit of the execution worktree; null when the set has no agent step. */
+  /** Checkpoint commit of the execution worktree when the set began. */
   head: Schema.NullOr(Schema.String),
   modelSelection: Schema.NullOr(ModelSelection),
 });
