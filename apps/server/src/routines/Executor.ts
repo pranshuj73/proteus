@@ -600,26 +600,34 @@ const make = Effect.gen(function* () {
         return Exit.isSuccess(outcome) && outcome.value;
       });
 
+      const settledBranches = new Set<RoutineStepId>();
+
       /** Folds write branches back into the execution branch in step order. */
       const mergeBranches = Effect.fn("Executor.mergeBranches")(function* (
         runs: ReadonlyArray<StepRun>,
       ) {
         for (const run of runs) {
           if (run.branch === null || run.error !== null) continue;
+          if (settledBranches.has(run.step.id)) continue;
           yield* commitAll(run.branch.worktreePath, `Routine step ${run.step.id}`);
           const merged = yield* mergeBranch(workspaceStrategy.worktreePath, run.branch.branch);
           if (!merged.merged) {
             const files = merged.files.length === 0 ? "unknown files" : merged.files.join(", ");
             const resolved = yield* resolveConflict(run.step, run.branch.branch, files);
             if (resolved) {
+              settledBranches.add(run.step.id);
               yield* git
                 .removeWorktree({ workspaceRoot, worktreePath: run.branch.worktreePath })
                 .pipe(Effect.ignore);
               continue;
             }
             yield* abortMerge(workspaceStrategy.worktreePath);
-            return `Merge conflict joining step "${run.step.id}" into ${workspaceStrategy.branch}: ${files}. Its work is kept on ${run.branch.branch}.`;
+            return {
+              run,
+              message: `Merge conflict joining step "${run.step.id}" into ${workspaceStrategy.branch}: ${files}. Its work is kept on ${run.branch.branch}.`,
+            };
           }
+          settledBranches.add(run.step.id);
           yield* git
             .removeWorktree({ workspaceRoot, worktreePath: run.branch.worktreePath })
             .pipe(Effect.ignore);
@@ -707,11 +715,26 @@ const make = Effect.gen(function* () {
           concurrency: "unbounded",
         });
 
+        settledBranches.clear();
         const failures = runs.filter(
           (run) => run.error !== null && (run.fatal || run.step.onError === undefined),
         );
-        const conflict = yield* mergeBranches(runs);
-        if (conflict !== null) return yield* fail(conflict);
+        // A person can fix the kept branch and retry, drop it with skip, or restart.
+        let conflict = yield* mergeBranches(runs);
+        let rewoundMerge = false;
+        while (conflict !== null) {
+          const decision = yield* park("needs_attention", conflict.message);
+          if (decision.action === "restart") {
+            yield* rewindTo(decision.stepId);
+            ready = [decision.stepId];
+            waiting = [];
+            rewoundMerge = true;
+            break;
+          }
+          if (decision.action === "skip") settledBranches.add(conflict.run.step.id);
+          conflict = yield* mergeBranches(runs);
+        }
+        if (rewoundMerge) continue;
 
         const reached: RoutineStepId[] = [...waiting];
         for (const run of runs) {

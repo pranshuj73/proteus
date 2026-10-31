@@ -846,13 +846,13 @@ it.effect("an approved agent resolution completes a conflicted merge and is reco
   ),
 );
 
-it.effect("a merge conflict fails the execution naming the branch and files", () => {
+it.effect("a rejected merge conflict pauses for a person naming the branch and files", () => {
   const gitCalls: Array<string> = [];
   return withExecutor({ gitCalls, mergeConflict: true, routine: fanOut(false) }, (executor) =>
     Effect.gen(function* () {
       const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
       const settled = yield* awaitSettled(executor, execution.id);
-      assert.equal(settled.execution.status, "failed");
+      assert.equal(settled.execution.status, "needs_attention");
       assert.include(settled.execution.error ?? "", 'Merge conflict joining step "a"');
       assert.include(settled.execution.error ?? "", "src/a.ts");
       assert.isTrue(gitCalls.some((call) => call.endsWith(": merge --abort")));
