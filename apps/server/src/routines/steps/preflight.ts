@@ -182,7 +182,7 @@ export const installerLayer = Layer.effect(
               "--skill",
               input.name,
               ...(input.globalAgents === undefined
-                ? ["-a", "claude-code"]
+                ? ["-a", "universal"]
                 : ["-g", "-a", ...input.globalAgents]),
               "-y",
             ],
