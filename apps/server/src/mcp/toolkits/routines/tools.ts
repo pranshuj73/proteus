@@ -63,7 +63,7 @@ const RoutineSaveTool = Tool.make("t3_routine_save", {
 const RoutineSkillsTool = Tool.make("t3_routine_skills", {
   ...shared,
   description:
-    "List skills installed in the project (.agents/skills) so a routine can reference them. Pass query to also search the skills registry via `npx skills find`. Propose skills to the user before referencing them as source@name; nothing is installed or pinned while authoring.",
+    "List skills installed in the project (.agents/skills) so a routine can reference them. Pass query to also search the skills registry via `npx skills find`. Show the user each proposal's ref, install count, url and whether its source is already in the project lock before referencing it as source@name. Install counts show popularity, not safety. Nothing is installed or pinned while authoring.",
   parameters: Schema.Struct({
     projectId: ProjectId,
     query: Schema.optional(Schema.String),
@@ -72,7 +72,20 @@ const RoutineSkillsTool = Tool.make("t3_routine_skills", {
     installed: Schema.Array(
       Schema.Struct({ name: Schema.String, description: Schema.String, path: Schema.String }),
     ),
-    found: Schema.NullOr(Schema.String),
+    found: Schema.NullOr(
+      Schema.Array(
+        Schema.Struct({
+          ref: Schema.String,
+          source: Schema.String,
+          name: Schema.String,
+          installs: Schema.Number,
+          url: Schema.NullOr(Schema.String),
+          installed: Schema.Boolean,
+          sourceInLock: Schema.Boolean,
+        }),
+      ),
+    ),
+    foundRaw: Schema.NullOr(Schema.String),
   }),
 })
   .annotate(Tool.Readonly, true)

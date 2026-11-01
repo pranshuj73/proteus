@@ -14,7 +14,13 @@ import * as Path from "effect/Path";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import { RoutineProcessRunner } from "./adapters/process.ts";
-import { type InstalledSkill, listInstalledSkills } from "./skills.ts";
+import {
+  type InstalledSkill,
+  listInstalledSkills,
+  parseSkillSearch,
+  readLock,
+  type SkillCandidate,
+} from "./skills.ts";
 import { canonicalRoutineText, writeCanonical } from "./RoutineStore.ts";
 import { validateRoutine } from "./RoutineValidator.ts";
 
@@ -52,7 +58,10 @@ export interface RoutineSkillsInput {
 
 export interface RoutineSkillsOutput {
   readonly installed: ReadonlyArray<InstalledSkill>;
-  readonly found: string | null;
+  /** Null when the search did not run or failed. */
+  readonly found: ReadonlyArray<SkillCandidate> | null;
+  /** CLI text, only when it returned output this version cannot parse. */
+  readonly foundRaw: string | null;
 }
 
 export class RoutineAuthoring extends Context.Service<
@@ -135,8 +144,9 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
     const query = input.query?.trim();
-    if (query === undefined || query.length === 0) return { installed, found: null };
-    const found = yield* processRunner
+    if (query === undefined || query.length === 0)
+      return { installed, found: null, foundRaw: null };
+    const output = yield* processRunner
       .run({
         argv: ["npx", "--yes", "skills", "find", query],
         cwd: workspaceRoot,
@@ -147,7 +157,18 @@ const make = Effect.gen(function* () {
         Effect.map((result) => result.output.trim()),
         Effect.orElseSucceed(() => null),
       );
-    return { installed, found };
+    if (output === null) return { installed, found: null, foundRaw: null };
+    const pins = yield* readLock(workspaceRoot).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    const found = parseSkillSearch(output, {
+      installedNames: new Set(installed.map((skill) => skill.name)),
+      lockedSources: new Set(
+        [...pins.values()].flatMap((pin) => (pin.source === undefined ? [] : [pin.source])),
+      ),
+    });
+    return { installed, found, foundRaw: found.length === 0 ? output : null };
   });
 
   return RoutineAuthoring.of({ validateDefinition, saveDefinition, listSkills });

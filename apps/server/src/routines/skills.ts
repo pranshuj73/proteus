@@ -1,3 +1,5 @@
+import * as NodeUtil from "node:util";
+
 import type { RoutineDefinition } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -145,6 +147,52 @@ export const listInstalledSkills = Effect.fn("RoutineSkills.listInstalled")(func
   }
   return skills;
 });
+
+export interface SkillCandidate {
+  /** `source@name`, the form a routine step references. */
+  readonly ref: string;
+  readonly source: string;
+  readonly name: string;
+  /** Registry-reported and rounded by the CLI; popularity, not a security review. */
+  readonly installs: number;
+  readonly url: string | null;
+  readonly installed: boolean;
+  /** The project's skills-lock.json already pins a skill from this source. */
+  readonly sourceInLock: boolean;
+}
+
+const INSTALL_UNITS: Readonly<Record<string, number>> = { K: 1e3, M: 1e6, B: 1e9 };
+const RESULT_LINE = /^(\S+)@(\S+)\s+([\d.]+)([KMB]?) installs?$/;
+const URL_LINE = /^└\s+(https?:\/\/\S+)$/;
+
+/** Parses `skills find` output; truncated or unrecognized lines are dropped. */
+export const parseSkillSearch = (
+  output: string,
+  context: {
+    readonly installedNames: ReadonlySet<string>;
+    readonly lockedSources: ReadonlySet<string>;
+  },
+): ReadonlyArray<SkillCandidate> => {
+  const lines = NodeUtil.stripVTControlCharacters(output)
+    .split("\n")
+    .map((line) => line.trim());
+  return lines.flatMap((line, index) => {
+    const match = line.match(RESULT_LINE);
+    if (match === null) return [];
+    const [, source = "", name = "", count = "0", unit = ""] = match;
+    return [
+      {
+        ref: `${source}@${name}`,
+        source,
+        name,
+        installs: Math.round(Number(count) * (INSTALL_UNITS[unit] ?? 1)),
+        url: lines[index + 1]?.match(URL_LINE)?.[1] ?? null,
+        installed: context.installedNames.has(name),
+        sourceInLock: context.lockedSources.has(source),
+      },
+    ];
+  });
+};
 
 /** Provider skill dirs for the providers in use; `.agents/skills` itself needs no link. */
 export const providerSkillDirs = (providers: ReadonlyArray<string>): ReadonlyArray<string> => [
