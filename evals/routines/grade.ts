@@ -47,3 +47,15 @@ export const gradeHumanRouting = (definition: RoutineDefinition): boolean =>
       step.verdict.labels.every((label) => step.on?.[label] !== undefined) &&
       new Set(step.verdict.labels.map((label) => step.on?.[label])).size >= 2,
   );
+
+/** The skill step reaches a person: it takes their questions, or reads an earlier human step. */
+export const gradePersonInput = (definition: RoutineDefinition): boolean => {
+  const humans = new Set(
+    definition.steps.filter((step) => step.kind === "human").map((step) => step.id),
+  );
+  return definition.steps.some(
+    (step) =>
+      step.kind === "skill" &&
+      (step.questions === "person" || (step.inputs ?? []).some((id) => humans.has(id))),
+  );
+};

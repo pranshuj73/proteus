@@ -22,6 +22,7 @@ import {
   extractJson,
   gradeCouncil,
   gradeHumanRouting,
+  gradePersonInput,
   gradeRoutine,
   gradeSkillProposal,
 } from "./grade.ts";
@@ -90,7 +91,8 @@ for (const fixture of authorCases.filter((entry) => selected(entry.id))) {
       decoded._tag === "Some" &&
       validateRoutine(decoded.value).length === 0 &&
       gradeRoutine(decoded.value, fixture.expectKinds) &&
-      (fixture.expectHumanRouting !== true || gradeHumanRouting(decoded.value));
+      (fixture.expectHumanRouting !== true || gradeHumanRouting(decoded.value)) &&
+      (fixture.expectPersonInput !== true || gradePersonInput(decoded.value));
     rows.push({ id: fixture.id, sample, pass, output });
   }
 }

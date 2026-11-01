@@ -69,4 +69,12 @@ export const authorCases = [
     expectKinds: ["command", "human", "action"],
     expectHumanRouting: true,
   },
+  {
+    id: "author-interview-skill",
+    source: "a grill step has no requirements unless a person supplies them",
+    useCase:
+      "Use the grilling skill to interview me about what I want built, then have an agent implement it.",
+    expectKinds: ["skill", "agent"],
+    expectPersonInput: true,
+  },
 ];

@@ -1688,6 +1688,28 @@ const question: OrchestrationV2UserInputQuestion = {
   options: [{ label: "narrow", description: "Only the diff" }],
 };
 
+it.effect("a step set to person questions keeps the council out", () => {
+  const answers: Array<unknown> = [];
+  return withExecutor(
+    {
+      routine: {
+        ...askRoutine,
+        steps: [{ ...askRoutine.steps[0], questions: "person" }],
+      },
+      verdictText: "VERDICT: ok - fine",
+      question: [question],
+      answers,
+      councilText: councilReply,
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "ship it" });
+        yield* awaitSettled(executor, execution.id);
+        assert.deepEqual(answers, []);
+      }),
+  );
+});
+
 it.effect("the council answers an agent question, records it, and caches a feed summary", () => {
   const answers: Array<unknown> = [];
   return withExecutor(

@@ -29,6 +29,8 @@ A `human` step stops the run and asks you to choose one of its labels, with an o
 
 When an agent asks a question, a council agent answers for you and records its reasoning. It never grants approvals or provides secrets.
 
+To answer a step's questions yourself, for example when a skill interviews you about requirements, set `"questions": "person"` on that agent or skill step. The run waits for you in the step's thread, then carries on.
+
 ## Finish
 
 A successful execution waits for review. **Mark complete** deletes its worktree and warns you first about uncommitted or unpushed work. Failed executions keep theirs.

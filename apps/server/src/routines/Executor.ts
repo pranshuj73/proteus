@@ -591,7 +591,8 @@ const make = Effect.gen(function* () {
                   launchedThread = threadId;
                   return persistStep({ ...running, threadId });
                 }),
-              ...(modelSelection === undefined
+              ...(modelSelection === undefined ||
+              ((step.kind === "agent" || step.kind === "skill") && step.questions === "person")
                 ? {}
                 : {
                     answerQuestion: councilFor(initial, step, attempt, strategy, modelSelection),

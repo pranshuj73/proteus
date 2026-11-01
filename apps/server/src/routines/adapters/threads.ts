@@ -83,16 +83,27 @@ export interface RoutineCouncilModel {
 }
 
 /** What a person must answer in the thread: approvals, auth and secrets, not questions. */
-const blockingReason = (projection: {
-  readonly runtimeRequests: ReadonlyArray<{ readonly kind: string; readonly status: string }>;
-  readonly turnItems: ReadonlyArray<{ readonly type: string; readonly secretStatus?: string }>;
-}): string | null => {
+const blockingReason = (
+  projection: {
+    readonly runtimeRequests: ReadonlyArray<{ readonly kind: string; readonly status: string }>;
+    readonly turnItems: ReadonlyArray<{ readonly type: string; readonly secretStatus?: string }>;
+  },
+  questionsWaitForPerson: boolean,
+): string | null => {
   if (
     projection.turnItems.some(
       (item) => item.type === "secret_request" && item.secretStatus === "pending",
     )
   ) {
     return `${WAITING_IN_THREAD}: a secret is needed.`;
+  }
+  if (
+    questionsWaitForPerson &&
+    projection.runtimeRequests.some(
+      (candidate) => candidate.status === "pending" && candidate.kind === "user_input",
+    )
+  ) {
+    return `${WAITING_IN_THREAD}: a question needs your answer.`;
   }
   const request = projection.runtimeRequests.find(
     (candidate) => candidate.status === "pending" && candidate.kind !== "user_input",
@@ -199,7 +210,7 @@ const make = Effect.gen(function* () {
         }
       }
       if (input.onBlocked !== undefined) {
-        const reason = blockingReason(projection);
+        const reason = blockingReason(projection, input.onQuestion === undefined);
         if (reason !== blocked.reason) {
           blocked.reason = reason;
           yield* input.onBlocked(reason);
@@ -333,7 +344,7 @@ const make = Effect.gen(function* () {
               (cause) => new RoutineStepError({ message: "Failed to read agent thread.", cause }),
             ),
           );
-        if (blockingReason(current) === null) return result;
+        if (blockingReason(current, input.onQuestion === undefined) === null) return result;
       }
     });
     const watching =

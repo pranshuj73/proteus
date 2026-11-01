@@ -53,12 +53,17 @@ const routineStepBaseFields = {
   retries: Schema.optional(NonNegativeInt),
 };
 
+/** Who answers a step's questions; the council by default, or the person in the step's thread. */
+export const RoutineStepQuestions = Schema.Literals(["council", "person"]);
+export type RoutineStepQuestions = typeof RoutineStepQuestions.Type;
+
 export const RoutineSkillStep = Schema.Struct({
   ...routineStepBaseFields,
   kind: Schema.Literal("skill"),
   skill: TrimmedNonEmptyString,
   prompt: Schema.optional(Schema.String),
   verdict: RoutineVerdictSpec,
+  questions: Schema.optional(RoutineStepQuestions),
 });
 export type RoutineSkillStep = typeof RoutineSkillStep.Type;
 
@@ -67,6 +72,7 @@ export const RoutineAgentStep = Schema.Struct({
   kind: Schema.Literal("agent"),
   purpose: TrimmedNonEmptyString,
   verdict: RoutineVerdictSpec,
+  questions: Schema.optional(RoutineStepQuestions),
 });
 export type RoutineAgentStep = typeof RoutineAgentStep.Type;
 
@@ -492,6 +498,10 @@ Transitions (a step with neither is terminal):
   maxIterations: required on a step that any transition loops back to, whether that transition is in next or on.
   join: ids of steps this step waits for. A next with several ids fans out in parallel; the step that lists them in join runs once all succeeded.
   readOnly: true marks a step that never edits files. Parallel steps without it each get their own worktree, merged back afterwards (a merge conflict fails the execution).
+  questions: on agent and skill steps, who answers the step's questions. "council" (default) lets a proxy agent guess what the user wants so the run stays unattended. "person" pauses until the user answers in the step's thread.
+
+Steps that need the user's knowledge:
+  If an agent or skill step depends on requirements, preferences or decisions only the user holds, such as an interview or grilling skill, do not leave the council to guess them. Set questions: "person" when the step needs a back-and-forth with the user. When one round of context is enough for the council to expand on, put a human step before it and list that step in the agent or skill step's inputs. Steps that only need repository facts keep the default.
 
 Workflow:
   1. Draft the routine JSON from the user's use case. Prefer a simple linear next chain unless they need branching.
