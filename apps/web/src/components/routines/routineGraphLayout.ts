@@ -45,6 +45,8 @@ function stepDetail(step: RoutineStep): string {
       return step.argv.join(" ");
     case "action":
       return step.action;
+    case "human":
+      return step.prompt;
   }
 }
 

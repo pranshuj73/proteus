@@ -6,9 +6,12 @@ import type {
 } from "@t3tools/contracts";
 import { routineStepVerdictLabels } from "@t3tools/contracts";
 
+import { useState } from "react";
+
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 
 export function RoutineExecutionControls({
   execution,
@@ -22,6 +25,7 @@ export function RoutineExecutionControls({
   const control = useAtomCommand(serverEnvironment.controlRoutine, { label: "routine control" });
   const send = (input: RoutineControlInput) => void control({ environmentId, input });
   const executionId = execution.id;
+  const [note, setNote] = useState("");
 
   if (execution.status === "running") {
     return (
@@ -42,6 +46,36 @@ export function RoutineExecutionControls({
     );
   }
   if (execution.status !== "failed" && execution.status !== "needs_attention") return null;
+
+  const asking = steps
+    .filter((step) => step.status === "running")
+    .map((row) => execution.definition.steps.find((step) => step.id === row.stepId))
+    .find((step) => step?.kind === "human");
+  if (execution.status === "needs_attention" && asking?.kind === "human") {
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <Input
+          aria-label="Note for the routine"
+          value={note}
+          placeholder="Add a note (optional)"
+          onChange={(event) => setNote(event.target.value)}
+        />
+        {asking.verdict.labels.map((label) => (
+          <Button
+            key={label}
+            size="compact"
+            variant="outline"
+            onClick={() => {
+              send({ executionId, action: "respond", stepId: asking.id, label, note });
+              setNote("");
+            }}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+    );
+  }
 
   // Conflicted branches finished their step, so the step comes from the merge error.
   const conflictStep = execution.error?.match(/^Merge conflict joining step "([^"]+)"/)?.[1];

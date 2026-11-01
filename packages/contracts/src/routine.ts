@@ -88,11 +88,21 @@ export const RoutineActionStep = Schema.Struct({
 });
 export type RoutineActionStep = typeof RoutineActionStep.Type;
 
+/** Waits for a person; their chosen label routes the walk and their note becomes the output. */
+export const RoutineHumanStep = Schema.Struct({
+  ...routineStepBaseFields,
+  kind: Schema.Literal("human"),
+  prompt: TrimmedNonEmptyString,
+  verdict: RoutineVerdictSpec,
+});
+export type RoutineHumanStep = typeof RoutineHumanStep.Type;
+
 export const RoutineStep = Schema.Union([
   RoutineSkillStep,
   RoutineAgentStep,
   RoutineCommandStep,
   RoutineActionStep,
+  RoutineHumanStep,
 ]);
 export type RoutineStep = typeof RoutineStep.Type;
 
@@ -133,6 +143,7 @@ export const routineStepVerdictLabels = (step: RoutineStep): ReadonlyArray<strin
       return ["created", "failed"];
     case "skill":
     case "agent":
+    case "human":
       return step.verdict.labels;
   }
 };
@@ -356,6 +367,13 @@ export const RoutineControlInput = Schema.Union([
     label: Schema.String,
     reason: Schema.String,
   }),
+  Schema.Struct({
+    executionId: RoutineExecutionId,
+    action: Schema.Literal("respond"),
+    stepId: RoutineStepId,
+    label: Schema.String,
+    note: Schema.String,
+  }),
 ]);
 export type RoutineControlInput = typeof RoutineControlInput.Type;
 
@@ -453,6 +471,7 @@ Each step has an id, optional title, a kind, and transitions:
   kind "command": run a shell command. Fields: argv (non-empty string array), optional cwd (relative to the worktree), passExitCodes (default [0]). Implicit verdict labels: pass | fail.
   kind "agent": delegate to an agent. Fields: purpose (what to do), verdict: { labels: [...] } (your own kebab-case outcome labels, at least one).
   kind "skill": run a named skill. Fields: skill ("name" or "source@name"), optional prompt, verdict: { labels: [...] }.
+  kind "human": wait for a person to choose. Fields: prompt (what to ask them), verdict: { labels: [...] } (the choices). Their optional note is the step's output.
   kind "action": a built-in action. Fields: action ("git.push" or "pr.create"), optional draft. Implicit verdict labels: created | failed.
 
 Transitions (a step with neither is terminal):

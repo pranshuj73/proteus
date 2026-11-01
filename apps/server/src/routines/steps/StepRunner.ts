@@ -2,7 +2,8 @@ import {
   type ModelSelection,
   type ProviderUserInputAnswers,
   type ProjectId,
-  type RoutineStep,
+  type RoutineHumanStep,
+  RoutineStep,
   type RoutineVerdict,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -46,6 +47,10 @@ export interface RoutineStepContext {
         question: RoutineThreadQuestion,
       ) => Effect.Effect<ProviderUserInputAnswers, RoutineStepError>)
     | undefined;
+  /** Holds a `human` step until a person responds. */
+  readonly awaitPerson?:
+    | ((step: RoutineHumanStep) => Effect.Effect<RoutineStepOutcome>)
+    | undefined;
   readonly onThreadLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
 }
 
@@ -74,5 +79,9 @@ export const runStep = (
       return runAgentOrSkillStep(step, context);
     case "action":
       return runActionStep(step, context);
+    case "human":
+      return context.awaitPerson === undefined
+        ? Effect.fail(new RoutineStepError({ message: "Nobody can answer this step." }))
+        : context.awaitPerson(step);
   }
 };

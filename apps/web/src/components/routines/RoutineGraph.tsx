@@ -22,6 +22,7 @@ const KIND_LABEL: Record<RoutineStep["kind"], string> = {
   agent: "Agent",
   command: "Command",
   action: "Action",
+  human: "Ask a person",
 };
 
 /** Static, non-animated node tints keyed by per-step run status. `pending` keeps the base card. */

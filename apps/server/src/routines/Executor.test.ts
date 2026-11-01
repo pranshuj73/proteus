@@ -1364,6 +1364,66 @@ it.effect("a council thread over its token cap stops the step", () =>
   ),
 );
 
+it.effect("a human step waits for a response, which routes the walk and becomes output", () =>
+  withExecutor(
+    {
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "ask",
+            kind: "human",
+            prompt: "Ship it?",
+            verdict: { labels: ["yes", "no"] },
+            on: { yes: "build", no: "$end" },
+          },
+          { id: "build", kind: "command", argv: ["make"], inputs: ["ask"] },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const executionId = execution.id;
+        const waiting = yield* executor.subscribeExecution(executionId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "needs_attention"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.match(waiting.execution.error ?? "", /Ship it\?/);
+        const retry = yield* Effect.flip(executor.control({ executionId, action: "retry" }));
+        assert.match(retry.message, /Respond to the waiting step/);
+        const wrong = yield* Effect.flip(
+          executor.control({
+            executionId,
+            action: "respond",
+            stepId: RoutineStepId.make("ask"),
+            label: "maybe",
+            note: "",
+          }),
+        );
+        assert.match(wrong.message, /not a verdict/);
+        yield* executor.control({
+          executionId,
+          action: "respond",
+          stepId: RoutineStepId.make("ask"),
+          label: "yes",
+          note: "Looks good",
+        });
+        const settled = yield* executor.subscribeExecution(executionId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        const ask = settled.steps.find((step) => step.stepId === "ask");
+        assert.equal(ask?.verdict?.label, "yes");
+        assert.equal(ask?.outputExcerpt, "Looks good");
+        assert.isTrue(settled.steps.some((step) => step.stepId === "build"));
+      }),
+  ),
+);
+
 it.effect("an unparseable council reply fails the step", () =>
   withExecutor(
     {

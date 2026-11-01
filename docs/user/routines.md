@@ -21,6 +21,10 @@ Approval lives on your server, so a cloned repo starts unapproved. **Revoke** pa
 
 Executions commit checkpoints to their branch, so these appear in pushes and pull requests.
 
+## Ask a person
+
+A `human` step stops the run and asks you to choose one of its labels, with an optional note. Your choice picks the next step, and later steps can read your note. While it waits, you can only respond or cancel.
+
 ## The council
 
 When an agent asks a question, a council agent answers for you and records its reasoning. It never grants approvals or provides secrets.

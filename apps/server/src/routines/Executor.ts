@@ -6,6 +6,7 @@ import {
   type ProjectId,
   type ProviderUserInputAnswers,
   type RoutineCouncilRecord,
+  type RoutineHumanStep,
   type RoutineCouncilRecordsInput,
   type RoutineCouncilRecordsResult,
   type RoutineFeedBlock,
@@ -122,6 +123,8 @@ type WalkDecision = Exclude<RoutineControlInput, { readonly action: "pause" }>;
 interface WalkControl {
   pauseRequested: boolean;
   waiter: Deferred.Deferred<WalkDecision> | null;
+  /** The `human` step being asked; while set, only its response is accepted. */
+  askingStep: RoutineStepId | null;
 }
 
 /** Walk state rebuilt from persisted rows when an execution resumes. */
@@ -419,7 +422,8 @@ const make = Effect.gen(function* () {
       const outputs = new Map<RoutineStepId, string>(seed?.outputs);
       // Attempts stay unique per row; retries only reset how many count toward the step's limit.
       const attemptBase = new Map<RoutineStepId, number>();
-      const control: WalkControl = { pauseRequested: false, waiter: null };
+      const control: WalkControl = { pauseRequested: false, waiter: null, askingStep: null };
+      const personLock = yield* Semaphore.make(1);
       walkControls.set(initial.id, control);
 
       /** Holds the walk in `status` until the user decides; the worktree stays untouched. */
@@ -442,6 +446,24 @@ const make = Effect.gen(function* () {
         yield* persistExecution({ ...initial, status: "running", updatedAt: yield* nowIso });
         return decision;
       });
+
+      // Parallel branches share one waiter, so people answer one human step at a time.
+      const awaitPerson = (step: RoutineHumanStep) =>
+        personLock.withPermits(1)(
+          Effect.gen(function* () {
+            control.askingStep = step.id;
+            const decision = yield* park("needs_attention", `Waiting for you: ${step.prompt}`);
+            control.askingStep = null;
+            if (decision.action !== "respond") {
+              return yield* Effect.die("A human step only accepts a response.");
+            }
+            const note = decision.note.trim();
+            return {
+              verdict: { label: decision.label, reason: note || "Chosen by a person" },
+              outputExcerpt: note,
+            };
+          }),
+        );
 
       const resetAttempts = (id: RoutineStepId) => void attemptBase.set(id, attempts.get(id) ?? 0);
 
@@ -537,6 +559,7 @@ const make = Effect.gen(function* () {
                 const output = outputs.get(stepId);
                 return output === undefined ? [] : [{ stepId, output }];
               }),
+              awaitPerson,
               onThreadLaunched: (threadId) =>
                 Effect.suspend(() => {
                   launchedThread = threadId;
@@ -758,7 +781,8 @@ const make = Effect.gen(function* () {
 
         // Read-only branches share the execution worktree; the rest fork their own.
         const parallel = steps.length > 1;
-        const forks = (step: RoutineStep) => parallel && step.readOnly !== true;
+        const forks = (step: RoutineStep) =>
+          parallel && step.kind !== "human" && step.readOnly !== true;
         if (steps.some(forks)) {
           yield* commitAll(workspaceStrategy.worktreePath, "Routine checkpoint before fan-out");
         }
@@ -1248,13 +1272,24 @@ const make = Effect.gen(function* () {
     if (walk.waiter === null) {
       return yield* new RoutineError({ message: "This execution is not waiting for a decision." });
     }
-    if (input.action === "skip" || input.action === "restart") {
+    if ((input.action === "respond") !== (walk.askingStep !== null)) {
+      return yield* new RoutineError({
+        message:
+          input.action === "respond"
+            ? "This execution is not waiting for a response."
+            : "Respond to the waiting step, or cancel the execution.",
+      });
+    }
+    if (input.action === "respond" && input.stepId !== walk.askingStep) {
+      return yield* new RoutineError({ message: `Step "${input.stepId}" is not waiting.` });
+    }
+    if (input.action === "skip" || input.action === "restart" || input.action === "respond") {
       const { execution } = yield* readExecution(input.executionId);
       const step = execution.definition.steps.find((candidate) => candidate.id === input.stepId);
       if (step === undefined) {
         return yield* new RoutineError({ message: `Unknown step "${input.stepId}".` });
       }
-      if (input.action === "skip" && !routineStepVerdictLabels(step).includes(input.label)) {
+      if (input.action !== "restart" && !routineStepVerdictLabels(step).includes(input.label)) {
         return yield* new RoutineError({
           message: `"${input.label}" is not a verdict of that step.`,
         });

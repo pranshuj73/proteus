@@ -50,7 +50,7 @@ export function validateRoutine(def: RoutineDefinition): RoutineValidationIssue[
       seen.add(step.id);
     }
 
-    if (step.kind === "skill" || step.kind === "agent") {
+    if (step.kind === "skill" || step.kind === "agent" || step.kind === "human") {
       const labelSeen = new Set<string>();
       step.verdict.labels.forEach((label) => {
         if (labelSeen.has(label)) {
