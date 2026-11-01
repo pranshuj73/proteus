@@ -60,10 +60,12 @@ const RoutineSaveTool = Tool.make("t3_routine_save", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true);
 
+export const ROUTINE_SKILLS_DESCRIPTION =
+  "List skills installed in the project (.agents/skills) so a routine can reference them. Pass query to also search the skills registry via `npx skills find`. Show the user each proposal's ref, install count, url and whether its source is already in the project lock before referencing it as source@name. Install counts show popularity, not safety. Nothing is installed or pinned while authoring.";
+
 const RoutineSkillsTool = Tool.make("t3_routine_skills", {
   ...shared,
-  description:
-    "List skills installed in the project (.agents/skills) so a routine can reference them. Pass query to also search the skills registry via `npx skills find`. Show the user each proposal's ref, install count, url and whether its source is already in the project lock before referencing it as source@name. Install counts show popularity, not safety. Nothing is installed or pinned while authoring.",
+  description: ROUTINE_SKILLS_DESCRIPTION,
   parameters: Schema.Struct({
     projectId: ProjectId,
     query: Schema.optional(Schema.String),

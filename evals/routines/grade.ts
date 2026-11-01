@@ -15,6 +15,13 @@ export const gradeCouncil = ({ reply, expect }: CouncilGradeInput): boolean => {
 };
 
 /** Pulls the first fenced or bare JSON object out of a model reply. */
+/** A proposal names the ref, its popularity and link, and does not claim to be installed. */
+export const gradeSkillProposal = (reply: string, ref: string, url: string): boolean =>
+  reply.includes(ref) &&
+  reply.includes(url) &&
+  /859[,.]?4|859k|860k/i.test(reply) &&
+  !/\b(i(?:'ve| have)? installed|npx skills add)\b/i.test(reply);
+
 export const extractJson = (text: string): unknown => {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");

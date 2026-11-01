@@ -25,6 +25,29 @@ export const councilCases = [
   },
 ];
 
+export const skillCases = [
+  {
+    id: "skills-shows-proposal",
+    source: "issue #16: proposals are shown before being referenced",
+    request: "I want a routine step that reviews our React code. What skill would you use?",
+    result: {
+      installed: [],
+      found: [
+        {
+          ref: "vercel-labs/agent-skills@vercel-react-best-practices",
+          source: "vercel-labs/agent-skills",
+          name: "vercel-react-best-practices",
+          installs: 859400,
+          url: "https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices",
+          installed: false,
+          sourceInLock: false,
+        },
+      ],
+      foundRaw: null,
+    },
+  },
+];
+
 export const authorCases = [
   {
     id: "author-test-and-pr",

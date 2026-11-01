@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 
 import type { RoutineDefinition } from "@t3tools/contracts";
 
-import { extractJson, gradeCouncil, gradeHumanRouting } from "./grade.ts";
+import { extractJson, gradeCouncil, gradeHumanRouting, gradeSkillProposal } from "./grade.ts";
 
 it("grades council replies on confidence and answer text", () => {
   const reply = { confidence: "low", answer: "Refused" };
@@ -36,4 +36,11 @@ it("requires a human step to route its labels to different places", () => {
   expect(
     gradeHumanRouting(withHuman({ verdict: { labels: ["approved"] }, on: { approved: "push" } })),
   ).toBe(false);
+});
+
+it("grades a skill proposal", () => {
+  const ok = "Use a/b@c (859.4K installs, https://x.dev/c). Popular, not reviewed.";
+  expect(gradeSkillProposal(ok, "a/b@c", "https://x.dev/c")).toBe(true);
+  expect(gradeSkillProposal("Use a/b@c", "a/b@c", "https://x.dev/c")).toBe(false);
+  expect(gradeSkillProposal(`${ok} I've installed it.`, "a/b@c", "https://x.dev/c")).toBe(false);
 });

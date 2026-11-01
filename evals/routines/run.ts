@@ -11,13 +11,20 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { ROUTINE_SKILLS_DESCRIPTION } from "../../apps/server/src/mcp/toolkits/routines/tools.ts";
 import { validateRoutine } from "../../apps/server/src/routines/RoutineValidator.ts";
 import {
   buildCouncilPrompt,
   parseCouncilReply,
 } from "../../apps/server/src/routines/steps/council.ts";
-import { authorCases, councilCases } from "./cases.ts";
-import { extractJson, gradeCouncil, gradeHumanRouting, gradeRoutine } from "./grade.ts";
+import { authorCases, councilCases, skillCases } from "./cases.ts";
+import {
+  extractJson,
+  gradeCouncil,
+  gradeHumanRouting,
+  gradeRoutine,
+  gradeSkillProposal,
+} from "./grade.ts";
 
 const { values } = NodeUtil.parseArgs({
   options: {
@@ -84,6 +91,17 @@ for (const fixture of authorCases.filter((entry) => selected(entry.id))) {
       validateRoutine(decoded.value).length === 0 &&
       gradeRoutine(decoded.value, fixture.expectKinds) &&
       (fixture.expectHumanRouting !== true || gradeHumanRouting(decoded.value));
+    rows.push({ id: fixture.id, sample, pass, output });
+  }
+}
+
+for (const fixture of skillCases.filter((entry) => selected(entry.id))) {
+  const candidate = fixture.result.found[0];
+  const prompt = `You are writing a routine for a user. Tool t3_routine_skills: ${ROUTINE_SKILLS_DESCRIPTION}\n\nThe user said: ${fixture.request}\n\nThe tool returned:\n${JSON.stringify(fixture.result)}\n\nReply to the user.`;
+  for (let sample = 0; sample < samples; sample += 1) {
+    const output = ask(prompt);
+    const pass =
+      candidate !== undefined && gradeSkillProposal(output, candidate.ref, candidate.url);
     rows.push({ id: fixture.id, sample, pass, output });
   }
 }
