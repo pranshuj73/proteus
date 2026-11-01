@@ -6,6 +6,7 @@ import {
   type Project,
   ProjectId,
   ProviderInstanceId,
+  type RoutineDefinition,
   type RoutineExecutionId,
   type RoutineId,
   type RoutineError,
@@ -399,7 +400,11 @@ it.effect(
           assert.equal(settled.execution.status, "awaiting_review");
           assert.equal(settled.steps.at(-1)?.verdict?.label, "approved");
           const prompts = seen.filter((entry) => entry.includes("VERDICT:"));
-          assert.include(prompts[0] ?? "", "command output");
+          assert.include(prompts[0] ?? "", "untrusted evidence");
+          assert.include(
+            prompts[0] ?? "",
+            'Output of step "build":\n<evidence>\ncommand output\n</evidence>',
+          );
           assert.include(prompts[1] ?? "", "no valid verdict");
         }),
     );
@@ -616,6 +621,79 @@ it.effect("an agent step with no valid verdict fails the step and execution", ()
   ),
 );
 
+it.effect("invalid verdicts re-prompt twice on one thread, then fail into onError", () => {
+  const seen: Array<string> = [];
+  const continued: Array<string> = [];
+  return withExecutor(
+    {
+      seen,
+      continued,
+      verdictText: "VERDICT: maybe - unsure",
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "review",
+            kind: "agent",
+            purpose: "Review",
+            verdict: { labels: ["approved", "changes"] },
+            onError: "recover",
+          },
+          { id: "recover", kind: "command", argv: ["recover"] },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.deepEqual(continued, ["", "routine-thread", "routine-thread"]);
+        assert.equal(seen.filter((entry) => entry.includes("no valid verdict")).length, 2);
+        const review = settled.steps.find((step) => step.stepId === "review");
+        assert.equal(review?.status, "failed");
+        assert.include(review?.error ?? "", "approved, changes");
+        assert.isTrue(seen.includes("recover @ /worktrees/routine"));
+      }),
+  );
+});
+
+it.effect.each([
+  { text: "VERDICT: needs-work - x", verdict: { label: "needs-work", reason: "x" } },
+  { text: "verdict: done — shipped", verdict: { label: "done", reason: "shipped" } },
+  { text: "VERDICT: done", verdict: { label: "done", reason: "verdict reported" } },
+  {
+    text: "VERDICT: done - a\nVERDICT: needs-work - b",
+    verdict: { label: "needs-work", reason: "b" },
+  },
+  { text: "VERDICT: done - a\nVERDICT: maybe - b", verdict: null },
+  { text: "VERDICT: DONE - wrong case", verdict: null },
+])("a reply of $text gives verdict $verdict", ({ text, verdict }) =>
+  withExecutor(
+    {
+      verdictText: text,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "review",
+            kind: "agent",
+            purpose: "Review",
+            verdict: { labels: ["needs-work", "done"] },
+          },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.deepEqual(settled.steps[0]?.verdict ?? null, verdict);
+      }),
+  ),
+);
+
 it.effect("cancelling a running execution ends it cancelled", () =>
   Effect.gen(function* () {
     const gate = yield* Deferred.make<void>();
@@ -742,7 +820,7 @@ it.effect("starting an invalid routine fails with RoutineError", () =>
   ),
 );
 
-it.effect("a verdict loop retries with increasing attempts until maxIterations fails it", () =>
+it.effect("a verdict loop retries with increasing attempts until maxIterations parks it", () =>
   withExecutor(
     {
       exitCode: 1,
@@ -766,11 +844,141 @@ it.effect("a verdict loop retries with increasing attempts until maxIterations f
         const settled = yield* awaitSettled(executor, execution.id);
         assert.equal(settled.execution.status, "needs_attention");
         assert.include(settled.execution.error ?? "", 'Step "build" exceeded its limit of 3');
+        assert.include(
+          settled.execution.error ?? "",
+          "Last verdicts: fail (exit 1), fail (exit 1), fail (exit 1)",
+        );
         assert.deepEqual(settled.steps.map((step) => [step.stepId, step.attempt]).sort(), [
           ["build", 1],
           ["build", 2],
           ["build", 3],
         ]);
+      }),
+  ),
+);
+
+it.effect.each(["retry", "skip", "restart"] as const)(
+  "%s continues a loop that exhausted maxIterations",
+  (action) => {
+    const failing = ["make"];
+    const gitCalls: Array<string> = [];
+    const stepId = RoutineStepId.make("build");
+    return withExecutor(
+      {
+        failing,
+        gitCalls,
+        routine: {
+          version: 1,
+          name: "demo",
+          steps: [
+            {
+              id: "build",
+              kind: "command",
+              argv: ["make"],
+              maxIterations: 2,
+              on: { pass: "ship", fail: "build" },
+            },
+            { id: "ship", kind: "command", argv: ["ship"] },
+          ],
+        },
+      },
+      (executor) =>
+        Effect.gen(function* () {
+          const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+          const executionId = execution.id;
+          const parked = yield* awaitSettled(executor, executionId);
+          assert.equal(parked.execution.status, "needs_attention");
+          if (action !== "skip") failing.length = 0;
+          yield* executor.control(
+            action === "retry"
+              ? { executionId, action }
+              : action === "skip"
+                ? { executionId, action, stepId, label: "pass", reason: "known flake" }
+                : { executionId, action, stepId },
+          );
+          const finished = yield* executor.subscribeExecution(executionId).pipe(
+            Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+          const last = finished.steps.findLast((step) => step.stepId === "build");
+          assert.equal(last?.attempt, 3);
+          assert.equal(last?.verdict?.label, "pass");
+          assert.isTrue(finished.steps.some((step) => step.stepId === "ship"));
+          assert.equal(
+            gitCalls.some((call) => call.includes("reset --hard")),
+            action === "restart",
+          );
+        }),
+    );
+  },
+);
+
+it.effect("a verdict routes to its label's step, whatever its reason says", () => {
+  const seen: Array<string> = [];
+  return withExecutor(
+    {
+      seen,
+      verdictText: "VERDICT: changes - approved by nobody, do not ship",
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "review",
+            kind: "agent",
+            purpose: "Review",
+            verdict: { labels: ["approved", "changes"] },
+            on: { approved: "ship", changes: "fix" },
+          },
+          { id: "fix", kind: "command", argv: ["fix"] },
+          { id: "ship", kind: "command", argv: ["ship"] },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.deepEqual(
+          settled.steps.map((step) => step.stepId),
+          ["fix", "review"],
+        );
+      }),
+  );
+});
+
+it.effect("a loop on an identical tree continues while its verdict changes", () =>
+  withExecutor(
+    {
+      stuck: true,
+      verdictQueue: [
+        "VERDICT: retry - one",
+        "VERDICT: again - two",
+        "VERDICT: retry - three",
+        "VERDICT: done - four",
+      ],
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "fix",
+            kind: "agent",
+            purpose: "Fix it",
+            maxIterations: 5,
+            verdict: { labels: ["retry", "again", "done"] },
+            on: { retry: "fix", again: "fix", done: "$end" },
+          },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "awaiting_review");
+        assert.equal(settled.steps.length, 4);
       }),
   ),
 );
@@ -881,6 +1089,36 @@ it.effect("a join does not run when a branch failed, deferring to its onError ro
         assert.include(settled.execution.error ?? "", 'Join step "ship" never ran');
         assert.isTrue(seen.some((call) => call.startsWith("recover ")));
         assert.isFalse(seen.some((call) => call.startsWith("ship ")));
+      }),
+  );
+});
+
+it.effect("a join waits for its slower branch", () => {
+  const seen: Array<string> = [];
+  return withExecutor(
+    {
+      seen,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          { id: "build", kind: "command", argv: ["make"], next: ["a", "b"] },
+          { id: "a", kind: "command", argv: ["a"], readOnly: true, next: ["slow"] },
+          { id: "b", kind: "command", argv: ["b"], readOnly: true, next: ["ship"] },
+          { id: "slow", kind: "command", argv: ["slow"], next: ["ship"] },
+          { id: "ship", kind: "command", argv: ["ship"], join: ["slow", "b"] },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "awaiting_review");
+        assert.deepEqual(seen.slice(-2), [
+          "slow @ /worktrees/routine",
+          "ship @ /worktrees/routine",
+        ]);
       }),
   );
 });
@@ -1043,10 +1281,31 @@ const humanResumeRoutine = {
   ],
 };
 
+const chainResumeRoutine: RoutineDefinition = {
+  ...resumeRoutine,
+  steps: [
+    {
+      id: RoutineStepId.make("build"),
+      kind: "command",
+      argv: ["make"],
+      next: [RoutineStepId.make("review")],
+    },
+    {
+      id: RoutineStepId.make("review"),
+      kind: "agent",
+      purpose: "Review",
+      verdict: { labels: ["ok"] },
+      next: [RoutineStepId.make("ship")],
+    },
+    { id: RoutineStepId.make("ship"), kind: "command" as const, argv: ["make", "ship"] },
+  ],
+};
+
 const seedInterrupted = (
   runningStep: "build" | "review",
-  definition: typeof resumeRoutine | typeof humanResumeRoutine = resumeRoutine,
+  definition: RoutineDefinition = resumeRoutine,
   status: "running" | "needs_attention" = "running",
+  head = "",
 ) =>
   Effect.gen(function* () {
     const repository = yield* ExecutionRepository.ExecutionRepository;
@@ -1103,15 +1362,16 @@ const seedInterrupted = (
       ready: [RoutineStepId.make(runningStep)],
       waiting: [],
       attempts: runningStep === "build" ? {} : { build: 1 },
-      head: "",
+      head,
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "default-model" },
     });
   });
 
 it.effect.each([
-  { clean: true, thread: "old-thread" },
-  { clean: false, thread: "" },
-])("an interrupted execution resumes from its frontier (clean $clean)", ({ clean, thread }) => {
+  { clean: true, head: "", thread: "old-thread" },
+  { clean: false, head: "", thread: "" },
+  { clean: true, head: "older-commit", thread: "" },
+])("an interrupted execution resumes (clean $clean, head '$head')", ({ clean, head, thread }) => {
   const gitCalls: Array<string> = [];
   const continued: Array<string> = [];
   return withExecutor(
@@ -1120,7 +1380,7 @@ it.effect.each([
       continued,
       cleanWorktree: clean,
       routine: resumeRoutine,
-      seed: seedInterrupted("review"),
+      seed: seedInterrupted("review", resumeRoutine, "running", head),
     },
     (executor, raw) =>
       Effect.gen(function* () {
@@ -1138,9 +1398,97 @@ it.effect.each([
         assert.deepEqual(continued, [thread]);
         assert.equal(
           gitCalls.some((call) => call.includes("reset --hard")),
-          !clean,
+          thread === "",
         );
         assert.equal(finished.steps.filter((step) => step.stepId === "build").length, 1);
+      }),
+  );
+});
+
+it.effect("resume never reruns a finished agent verdict and follows the snapshot", () => {
+  const seen: Array<string> = [];
+  const continued: Array<string> = [];
+  return withExecutor(
+    {
+      seen,
+      continued,
+      cleanWorktree: true,
+      // The file changed after the run started; resume must ignore it.
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [{ id: "other", kind: "command", argv: ["other"] }],
+      },
+      // Crashed after the verdict landed but before the next frontier was saved.
+      seed: Effect.gen(function* () {
+        yield* seedInterrupted("review", chainResumeRoutine);
+        const repository = yield* ExecutionRepository.ExecutionRepository;
+        const at = "2026-01-01T00:00:00.000Z";
+        yield* repository.upsertStep({
+          executionId: resumeId,
+          stepId: RoutineStepId.make("review"),
+          attempt: 1,
+          status: "done",
+          verdict: { label: "ok", reason: "kept" },
+          outputExcerpt: null,
+          threadId: ThreadId.make("old-thread"),
+          error: null,
+          startedAt: at,
+          finishedAt: at,
+        });
+      }),
+    },
+    (executor, raw) =>
+      Effect.gen(function* () {
+        yield* raw.control({ executionId: resumeId, action: "resume" });
+        const finished = yield* executor.subscribeExecution(resumeId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.deepEqual(continued, []);
+        assert.deepEqual(seen, ["make ship @ /worktrees/kept"]);
+        assert.equal(
+          finished.steps.find((step) => step.stepId === "review")?.verdict?.reason,
+          "kept",
+        );
+      }),
+  );
+});
+
+it.effect("every agent step starts from a fresh checkpoint", () => {
+  const log: Array<string> = [];
+  return withExecutor(
+    {
+      seen: log,
+      gitCalls: log,
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "one",
+            kind: "agent",
+            purpose: "First",
+            verdict: { labels: ["ok"] },
+            next: ["two"],
+          },
+          { id: "two", kind: "agent", purpose: "Second", verdict: { labels: ["ok"] } },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        yield* awaitSettled(executor, execution.id);
+        const order = log.flatMap((entry) =>
+          entry.includes("rev-parse HEAD")
+            ? ["checkpoint"]
+            : entry.includes("First") || entry.includes("Second")
+              ? ["agent"]
+              : [],
+        );
+        assert.deepEqual(order, ["checkpoint", "agent", "checkpoint", "agent"]);
       }),
   );
 });

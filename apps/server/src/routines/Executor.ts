@@ -98,6 +98,7 @@ import {
 } from "./steps/StepRunner.ts";
 
 const RESTART_ERROR = "Interrupted by a server restart";
+const LAST_VERDICTS_SHOWN = 3;
 const COMMAND_RESTART_ERROR = `${RESTART_ERROR}. Its command may still be running, so check before resuming.`;
 interface CouncilSession {
   readonly threadId: ThreadId;
@@ -501,9 +502,17 @@ const make = Effect.gen(function* () {
         const attempt = (attempts.get(step.id) ?? 0) + 1;
         const limit = attemptLimit(step);
         if (attempt - (attemptBase.get(step.id) ?? 0) > limit) {
+          const rows = yield* repository.listSteps(initial.id).pipe(Effect.orDie);
+          const lastVerdicts = rows
+            .filter((row) => row.stepId === step.id && row.verdict !== null)
+            .toSorted((left, right) => left.attempt - right.attempt)
+            .slice(-LAST_VERDICTS_SHOWN)
+            .map((row) => `${row.verdict?.label} (${row.verdict?.reason})`);
           return {
             step,
-            error: `Step "${step.id}" exceeded its limit of ${limit} iterations.`,
+            error: `Step "${step.id}" exceeded its limit of ${limit} iterations.${
+              lastVerdicts.length > 0 ? ` Last verdicts: ${lastVerdicts.join(", ")}.` : ""
+            }`,
             result: undefined,
             fatal: true,
             branch: null,
