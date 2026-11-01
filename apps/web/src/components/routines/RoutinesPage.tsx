@@ -355,7 +355,6 @@ function RoutineCard({
             projectId={projectId}
             routineId={summary.id}
             routineName={name}
-            installsSkills={hasRemoteSkills}
             disabled={!valid || !summary.approved}
             onStarted={onSelectExecution}
           />

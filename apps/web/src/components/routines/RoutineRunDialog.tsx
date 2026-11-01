@@ -1,4 +1,11 @@
-import type { EnvironmentId, ProjectId, RoutineExecutionId, RoutineId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  RoutineExecutionId,
+  RoutineId,
+  RoutineSkillScope,
+  RoutineSkillScopeRequired,
+} from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -20,17 +27,21 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
-import { Checkbox } from "../ui/checkbox";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+
+const isSkillScopeRequired = (failure: unknown): failure is RoutineSkillScopeRequired =>
+  typeof failure === "object" &&
+  failure !== null &&
+  "_tag" in failure &&
+  failure._tag === "RoutineSkillScopeRequired";
 
 export function RoutineRunDialog({
   environmentId,
   projectId,
   routineId,
   routineName,
-  installsSkills,
   disabled,
   onStarted,
 }: {
@@ -38,18 +49,16 @@ export function RoutineRunDialog({
   readonly projectId: ProjectId;
   readonly routineId: RoutineId;
   readonly routineName: string;
-  /** The routine references remote skills that preflight may install. */
-  readonly installsSkills: boolean;
   readonly disabled: boolean;
   readonly onStarted: (executionId: RoutineExecutionId) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [brief, setBrief] = useState("");
   const [busy, setBusy] = useState(false);
-  const [installGlobally, setInstallGlobally] = useState(false);
+  const [scopeRequest, setScopeRequest] = useState<RoutineSkillScopeRequired | null>(null);
   const start = useAtomCommand(serverEnvironment.startRoutine, { label: "routine start" });
 
-  const run = async () => {
+  const run = async (skillScope?: RoutineSkillScope) => {
     if (busy) return;
     setBusy(true);
     const result = await start({
@@ -58,22 +67,28 @@ export function RoutineRunDialog({
         projectId,
         routineId,
         brief: brief.trim(),
-        skillScope: installGlobally ? "global" : "project",
+        ...(skillScope === undefined ? {} : { skillScope }),
       },
     });
     setBusy(false);
     if (result._tag === "Success") {
       setOpen(false);
       setBrief("");
+      setScopeRequest(null);
       onStarted(result.value.execution.id);
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
+      const failure = squashAtomCommandFailure(result);
+      if (isSkillScopeRequired(failure)) {
+        setScopeRequest(failure);
+        return;
+      }
       toastManager.add(
         stackedThreadToast({
           type: "error",
           title: "Could not start routine",
-          description: String(squashAtomCommandFailure(result)),
+          description: String(failure),
         }),
       );
     }
@@ -85,6 +100,7 @@ export function RoutineRunDialog({
       onOpenChange={(next) => {
         if (!next && busy) return;
         setOpen(next);
+        if (!next) setScopeRequest(null);
       }}
     >
       <DialogTrigger
@@ -121,19 +137,11 @@ export function RoutineRunDialog({
                 rows={4}
               />
             </div>
-            {installsSkills ? (
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="routine-run-global-skills"
-                  checked={installGlobally}
-                  disabled={busy}
-                  onCheckedChange={(checked) => setInstallGlobally(checked === true)}
-                />
-                <Label htmlFor="routine-run-global-skills">
-                  Install missing skills globally instead of in this project
-                </Label>
-              </div>
-            ) : null}
+            {scopeRequest === null ? null : (
+              <p className="text-sm" role="status">
+                Install {scopeRequest.missingSkills.join(", ")} for this project or globally?
+              </p>
+            )}
             <p className="text-2xs text-muted-foreground">
               Runs on the project's default model. Model overrides land in a later ticket.
             </p>
@@ -143,9 +151,25 @@ export function RoutineRunDialog({
           <DialogClose disabled={busy} render={<Button variant="outline" type="button" />}>
             Cancel
           </DialogClose>
-          <Button type="button" disabled={busy} onClick={() => void run()}>
-            {busy ? "Starting…" : "Run"}
-          </Button>
+          {scopeRequest === null ? (
+            <Button type="button" disabled={busy} onClick={() => void run()}>
+              {busy ? "Starting…" : "Run"}
+            </Button>
+          ) : (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy || !scopeRequest.canInstallGlobally}
+                onClick={() => void run("global")}
+              >
+                Global
+              </Button>
+              <Button type="button" disabled={busy} onClick={() => void run("project")}>
+                Project
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogPopup>
     </Dialog>

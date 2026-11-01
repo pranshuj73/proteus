@@ -104,9 +104,14 @@ const withExecutor = <A, E>(
           }),
           Layer.mock(RoutineGitProvisioner)({
             provisionWorktree: ({ branch }) =>
-              Effect.succeed({
-                worktreePath: branch.includes("--") ? `/worktrees/${branch}` : "/worktrees/routine",
-                branch,
+              Effect.sync(() => {
+                fakes.gitCalls?.push(`provision ${branch}`);
+                return {
+                  worktreePath: branch.includes("--")
+                    ? `/worktrees/${branch}`
+                    : "/worktrees/routine",
+                  branch,
+                };
               }),
             removeWorktree: ({ worktreePath }) =>
               Effect.sync(() => void fakes.gitCalls?.push(`remove ${worktreePath}`)),
@@ -122,6 +127,9 @@ const withExecutor = <A, E>(
           Layer.mock(RoutineProcessRunner)({
             run: ({ cwd, argv }) =>
               Effect.sync(() => {
+                if (argv[0] === "git" && fakes.failing?.includes(argv.join(" "))) {
+                  return { code: 1, output: "", timedOut: false };
+                }
                 if (argv[0] === "git") {
                   const args = argv.slice(5);
                   fakes.gitCalls?.push(`${cwd}: ${args.join(" ")}`);
@@ -960,6 +968,36 @@ it.effect("a failed skill preflight removes the worktree", () => {
         const failed = yield* executor.start({ projectId, routineId, brief: "" }).pipe(Effect.flip);
         assert.include(failed.message, "preflight");
         assert.include(gitCalls, "remove /worktrees/routine");
+      }),
+  );
+});
+
+it.effect("a missing remote skill asks for a scope before provisioning a worktree", () => {
+  const gitCalls: Array<string> = [];
+  return withExecutor(
+    {
+      gitCalls,
+      failing: ["git cat-file -e HEAD:.agents/skills/never-installed-skill/SKILL.md"],
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "s",
+            kind: "skill",
+            skill: "acme/skills@never-installed-skill",
+            verdict: { labels: ["ok"] },
+          },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const asked = yield* executor.start({ projectId, routineId, brief: "" }).pipe(Effect.flip);
+        assert.strictEqual(asked._tag, "RoutineSkillScopeRequired");
+        if (asked._tag !== "RoutineSkillScopeRequired") return;
+        assert.deepEqual(asked.missingSkills, ["never-installed-skill"]);
+        assert.deepEqual(gitCalls, []);
       }),
   );
 });

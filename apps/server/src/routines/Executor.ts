@@ -32,6 +32,7 @@ import {
   type RoutineRevokeInput,
   routineExecutables,
   routineStepVerdictLabels,
+  RoutineSkillScopeRequired,
   type RoutineStartInput,
   type RoutineStartResult,
   type RoutineId,
@@ -58,12 +59,17 @@ import * as ProjectService from "../project/ProjectService.ts";
 import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/threads.ts";
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
-import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
+import {
+  missingRemoteSkills,
+  RoutineSkillInstaller,
+  runSkillPreflight,
+} from "./steps/preflight.ts";
 import {
   SKILLS_DIR,
   allGlobalSkillDirs,
   hashSkillFolder,
   referencedSkills,
+  globalSkillTargets,
   skillDrift,
 } from "./skills.ts";
 import * as RoutineStore from "./RoutineStore.ts";
@@ -140,7 +146,9 @@ interface WalkSeed {
 export class Executor extends Context.Service<
   Executor,
   {
-    readonly start: (input: RoutineStartInput) => Effect.Effect<RoutineStartResult, RoutineError>;
+    readonly start: (
+      input: RoutineStartInput,
+    ) => Effect.Effect<RoutineStartResult, RoutineError | RoutineSkillScopeRequired>;
     readonly approve: (
       input: RoutineApproveInput,
     ) => Effect.Effect<RoutineApproveResult, RoutineError>;
@@ -1032,6 +1040,34 @@ const make = Effect.gen(function* () {
     const modelSelection =
       input.modelSelection ??
       (needsModel ? yield* threads.resolveDefaultModel(input.projectId) : undefined);
+    const providers = modelSelection === undefined ? [] : [modelSelection.instanceId];
+
+    if (input.skillScope === undefined) {
+      const missingSkills = yield* missingRemoteSkills({
+        workspaceRoot,
+        definition,
+        providers,
+        globalHome: NodeOS.homedir(),
+      }).pipe(
+        Effect.provideContext(stepEnv),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.mapError(
+          (cause) =>
+            new RoutineError({
+              message: `Skill preflight failed: ${cause.message}`,
+              routineId: input.routineId,
+            }),
+        ),
+      );
+      if (missingSkills.length > 0) {
+        return yield* new RoutineSkillScopeRequired({
+          message: `Choose where to install: ${missingSkills.join(", ")}.`,
+          routineId: input.routineId,
+          missingSkills,
+          canInstallGlobally: globalSkillTargets(providers).length > 0,
+        });
+      }
+    }
 
     const unique = yield* crypto
       .randomUUIDv4()
@@ -1051,8 +1087,9 @@ const make = Effect.gen(function* () {
     const skillHashes = yield* runSkillPreflight({
       worktreePath: worktree.worktreePath,
       definition,
-      providers: modelSelection === undefined ? [] : [modelSelection.instanceId],
-      globalHome: input.skillScope === "global" ? NodeOS.homedir() : undefined,
+      providers,
+      globalHome: NodeOS.homedir(),
+      installGlobally: input.skillScope === "global",
     }).pipe(
       Effect.provideService(RoutineSkillInstaller, skillInstaller),
       Effect.provideContext(stepEnv),
