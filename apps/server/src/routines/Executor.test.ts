@@ -1024,7 +1024,30 @@ const resumeRoutine = {
 };
 const resumeId = "routine-execution:resume" as RoutineExecutionId;
 
-const seedInterrupted = (runningStep: "build" | "review") =>
+const humanResumeRoutine = {
+  version: 1 as const,
+  name: "demo",
+  steps: [
+    {
+      id: RoutineStepId.make("build"),
+      kind: "command" as const,
+      argv: ["make"],
+      next: [RoutineStepId.make("review")],
+    },
+    {
+      id: RoutineStepId.make("review"),
+      kind: "human" as const,
+      prompt: "Ship it?",
+      verdict: { labels: ["yes"] },
+    },
+  ],
+};
+
+const seedInterrupted = (
+  runningStep: "build" | "review",
+  definition: typeof resumeRoutine | typeof humanResumeRoutine = resumeRoutine,
+  status: "running" | "needs_attention" = "running",
+) =>
   Effect.gen(function* () {
     const repository = yield* ExecutionRepository.ExecutionRepository;
     const at = "2026-01-01T00:00:00.000Z";
@@ -1039,7 +1062,7 @@ const seedInterrupted = (runningStep: "build" | "review") =>
       projectId,
       routineId,
       hash: "hash",
-      definition: resumeRoutine,
+      definition,
       approvedAt: at,
     });
     yield* repository.addAllowlist({ projectId, executable: "make", addedAt: at });
@@ -1048,9 +1071,9 @@ const seedInterrupted = (runningStep: "build" | "review") =>
       projectId,
       routineId,
       routineHash: "hash",
-      definition: resumeRoutine,
+      definition,
       brief: "",
-      status: "running",
+      status,
       worktreePath: "/worktrees/kept",
       branch: "routine/kept",
       error: null,
@@ -1121,6 +1144,42 @@ it.effect.each([
       }),
   );
 });
+
+it.effect("a human step left waiting by a server restart asks again on resume", () =>
+  withExecutor(
+    {
+      routine: humanResumeRoutine,
+      seed: seedInterrupted("review", humanResumeRoutine, "needs_attention"),
+    },
+    (executor, raw) =>
+      Effect.gen(function* () {
+        const before = yield* executor
+          .subscribeExecution(resumeId)
+          .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+        assert.equal(before.execution.status, "interrupted");
+        yield* raw.control({ executionId: resumeId, action: "resume" });
+        const asked = yield* executor.subscribeExecution(resumeId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "needs_attention"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.match(asked.execution.error ?? "", /Ship it\?/);
+        yield* raw.control({
+          executionId: resumeId,
+          action: "respond",
+          stepId: RoutineStepId.make("review"),
+          label: "yes",
+          note: "",
+        });
+        const finished = yield* executor.subscribeExecution(resumeId).pipe(
+          Stream.filter((snapshot) => snapshot.execution.status === "awaiting_review"),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        assert.equal(finished.steps.filter((step) => step.stepId === "build").length, 1);
+      }),
+  ),
+);
 
 it.effect("auto-resume continues agent steps but holds interrupted command steps", () =>
   Effect.gen(function* () {
