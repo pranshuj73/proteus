@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 
 import { RoutineProcessRunner } from "../adapters/process.ts";
 import { listInstalledSkills } from "../skills.ts";
-import { RoutineSkillInstaller, runSkillPreflight } from "./preflight.ts";
+import { missingRemoteSkills, RoutineSkillInstaller, runSkillPreflight } from "./preflight.ts";
 
 const definition = Schema.decodeSync(RoutineDefinition)({
   version: 1,
@@ -93,6 +93,61 @@ it.effect("installs a locked skill, links it and commits it", () =>
   }).pipe(Effect.scoped, Effect.provide(env)),
 );
 
+it.effect("a first project install keeps the pin the installer wrote", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* setup;
+    const pinningInstaller = Layer.succeed(RoutineSkillInstaller)({
+      update: () => Effect.void,
+      install: (input) =>
+        Effect.gen(function* () {
+          const installer = yield* RoutineSkillInstaller;
+          yield* installer.install(input);
+          yield* fs
+            .writeFileString(
+              `${input.cwd}/skills-lock.json`,
+              JSON.stringify({ skills: { plan: { source: "acme/skills" } } }),
+            )
+            .pipe(Effect.orDie);
+        }).pipe(Effect.provide(fakeInstaller)),
+    });
+    const hashes = yield* runSkillPreflight({
+      worktreePath: root,
+      definition,
+      providers: [],
+    }).pipe(Effect.provide(pinningInstaller));
+    assert.strictEqual(hashes.size, 1);
+    assert.match(git(root, "show", "--name-only", "--format=%s"), /skills-lock\.json/);
+  }).pipe(Effect.scoped, Effect.provide(env)),
+);
+
+it.effect("a missing remote skill is found at HEAD or globally, not in uncommitted files", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* setup;
+    const home = yield* fs.makeTempDirectoryScoped();
+    const missing = missingRemoteSkills({
+      workspaceRoot: root,
+      definition,
+      providers: ["claudeAgent"],
+      globalHome: home,
+    });
+    yield* fs.makeDirectory(`${root}/.agents/skills/plan`, { recursive: true });
+    yield* fs.writeFileString(`${root}/.agents/skills/plan/SKILL.md`, "body");
+    assert.deepStrictEqual(yield* missing, ["plan"]);
+
+    git(root, "add", ".");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "skill");
+    assert.deepStrictEqual(yield* missing, []);
+
+    git(root, "rm", "-rq", ".agents");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "drop");
+    yield* fs.makeDirectory(`${home}/.claude/skills/plan`, { recursive: true });
+    yield* fs.writeFileString(`${home}/.claude/skills/plan/SKILL.md`, "body");
+    assert.deepStrictEqual(yield* missing, []);
+  }).pipe(Effect.scoped, Effect.provide(env)),
+);
+
 it.effect("a global scope uses the home copy, with no lock pin or project commit", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -106,6 +161,7 @@ it.effect("a global scope uses the home copy, with no lock pin or project commit
       definition,
       providers: ["claudeAgent"],
       globalHome: home,
+      installGlobally: true,
     });
     assert.strictEqual(hashes.size, 1);
     assert.strictEqual(git(root, "rev-parse", "HEAD"), before);

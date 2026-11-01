@@ -43,11 +43,51 @@ export interface SkillPreflightInput {
   readonly definition: RoutineDefinition;
   /** Provider driver kinds used by the routine's steps and council. */
   readonly providers: ReadonlyArray<string>;
-  /** Set for a global install: the home directory missing skills go under. */
+  /** Home directory searched for global skills; unset ignores global skills entirely. */
   readonly globalHome?: string | undefined;
+  /** Installs skills missing everywhere under `globalHome` instead of the project. */
+  readonly installGlobally?: boolean | undefined;
 }
 
 const fail = (message: string) => new RoutineError({ message });
+
+const installedGlobally = Effect.fn("RoutineSkills.installedGlobally")(function* (
+  dirs: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const present = yield* Effect.forEach(dirs, (dir) => fs.exists(`${dir}/SKILL.md`));
+  return present.length > 0 && !present.includes(false);
+});
+
+/**
+ * Remote skills found neither at the project's HEAD, which execution worktrees start from, nor in
+ * the global directories of the providers in use.
+ */
+export const missingRemoteSkills = Effect.fn("RoutineSkills.missingRemote")(function* (input: {
+  readonly workspaceRoot: string;
+  readonly definition: RoutineDefinition;
+  readonly providers: ReadonlyArray<string>;
+  readonly globalHome: string;
+}) {
+  const path = yield* Path.Path;
+  const process = yield* RoutineProcessRunner;
+  const targets = globalSkillTargets(input.providers);
+  const missing: Array<string> = [];
+  for (const ref of referencedSkills(input.definition)) {
+    if (ref.source === undefined) continue;
+    const inProject = yield* process
+      .run({
+        argv: ["git", "cat-file", "-e", `HEAD:${SKILLS_DIR}/${ref.name}/SKILL.md`],
+        cwd: input.workspaceRoot,
+        maxOutputBytes: 4000,
+      })
+      .pipe(Effect.mapError((cause) => new RoutineError({ message: cause.message, cause })));
+    if (inProject.code === 0) continue;
+    const globalDirs = targets.map((target) => path.join(input.globalHome, target.dir, ref.name));
+    if (!(yield* installedGlobally(globalDirs))) missing.push(ref.name);
+  }
+  return missing;
+});
 
 /**
  * Verifies every referenced skill against skills-lock.json, installing missing ones, linking them
@@ -67,7 +107,7 @@ export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* 
   const installer = yield* RoutineSkillInstaller;
   const process = yield* RoutineProcessRunner;
   const globalTargets = input.globalHome === undefined ? [] : globalSkillTargets(input.providers);
-  if (input.globalHome !== undefined && globalTargets.length === 0) {
+  if (input.installGlobally === true && globalTargets.length === 0) {
     return yield* fail("These providers do not support global skills. Install to the project.");
   }
   const linkDirs = providerSkillDirs(input.providers);
@@ -76,19 +116,14 @@ export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* 
   for (const ref of refs) {
     const pin = pins.get(ref.name);
     const projectDir = path.join(input.worktreePath, SKILLS_DIR, ref.name);
-    if (
-      input.globalHome !== undefined &&
-      ref.source !== undefined &&
-      !(yield* fs.exists(path.join(projectDir, "SKILL.md")))
-    ) {
+    const inProject = yield* fs.exists(path.join(projectDir, "SKILL.md"));
+    const globalDirs = globalTargets.map((target) =>
+      path.join(input.globalHome ?? "", target.dir, ref.name),
+    );
+    const inGlobal = yield* installedGlobally(globalDirs);
+    if (ref.source !== undefined && !inProject && (inGlobal || input.installGlobally === true)) {
       // Global installs have no project lock; approval's pinned hash is their only drift check.
-      const globalDirs = globalTargets.map((target) =>
-        path.join(input.globalHome ?? "", target.dir, ref.name),
-      );
-      const present = yield* Effect.forEach(globalDirs, (dir) =>
-        fs.exists(path.join(dir, "SKILL.md")),
-      );
-      if (present.includes(false)) {
+      if (!inGlobal) {
         yield* installer.install({
           cwd: input.worktreePath,
           source: ref.source,
@@ -108,14 +143,11 @@ export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* 
       hashes.set(ref.name, hash);
       continue;
     }
-    if (ref.source !== undefined && pin === undefined) {
-      return yield* fail(`Skill "${ref.name}" is not pinned in ${SKILLS_LOCK}.`);
-    }
     if (ref.source !== undefined && pin?.source !== undefined && pin.source !== ref.source) {
       return yield* fail(`Skill "${ref.name}" is locked to ${pin.source}, not ${ref.source}.`);
     }
     const dir = projectDir;
-    if (!(yield* fs.exists(path.join(dir, "SKILL.md")))) {
+    if (!inProject) {
       if (ref.source === undefined) {
         return yield* fail(`Local skill "${ref.name}" is missing from ${SKILLS_DIR}.`);
       }
@@ -125,6 +157,13 @@ export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* 
         return yield* fail(
           `Installing skill "${ref.name}" did not produce ${SKILLS_DIR}/${ref.name}.`,
         );
+      }
+    }
+    // The CLI writes the pin on install, so a first install can only be checked afterwards.
+    if (ref.source !== undefined) {
+      const lockedPin = inProject ? pin : (yield* readLock(input.worktreePath)).get(ref.name);
+      if (lockedPin === undefined) {
+        return yield* fail(`Skill "${ref.name}" is not pinned in ${SKILLS_LOCK}.`);
       }
     }
     const hash = yield* hashSkillFolder(dir).pipe(

@@ -387,6 +387,7 @@ import {
   RoutineUpdateSkillsInput,
   RoutineCouncilRecordsResult,
   RoutineError,
+  RoutineSkillScopeRequired,
   RoutineExecutionInput,
   RoutineExecutionResult,
   RoutineExecutionsInput,
@@ -1980,7 +1981,7 @@ const WsRoutinesListRpc = Rpc.make(WS_METHODS.routinesList, {
 const WsRoutinesStartRpc = Rpc.make(WS_METHODS.routinesStart, {
   payload: RoutineStartInput,
   success: RoutineStartResult,
-  error: Schema.Union([RoutineError, EnvironmentAuthorizationError]),
+  error: Schema.Union([RoutineError, RoutineSkillScopeRequired, EnvironmentAuthorizationError]),
 });
 
 const WsRoutinesApproveRpc = Rpc.make(WS_METHODS.routinesApprove, {

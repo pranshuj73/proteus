@@ -195,6 +195,17 @@ export class RoutineError extends Schema.TaggedError<RoutineError>()("RoutineErr
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
+/** Start needs a person to choose where these remote skills install; nothing was provisioned. */
+export class RoutineSkillScopeRequired extends Schema.TaggedError<RoutineSkillScopeRequired>()(
+  "RoutineSkillScopeRequired",
+  {
+    message: Schema.String,
+    routineId: RoutineId,
+    missingSkills: Schema.Array(Schema.String),
+    canInstallGlobally: Schema.Boolean,
+  },
+) {}
+
 /** Lean execution lifecycle: no approval gate, no retries. */
 export const RoutineExecutionStatus = Schema.Literals([
   "running",
@@ -301,7 +312,7 @@ export const RoutineStartInput = Schema.Struct({
   routineId: RoutineId,
   brief: Schema.String,
   modelSelection: Schema.optional(ModelSelection),
-  /** Where preflight installs missing skills; defaults to project. */
+  /** Where preflight installs missing skills; start refuses without it when any are missing. */
   skillScope: Schema.optional(RoutineSkillScope),
 });
 export type RoutineStartInput = typeof RoutineStartInput.Type;

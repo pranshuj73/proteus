@@ -21,6 +21,7 @@ import {
   type RoutineRevokeInput,
   type RoutineUpdateSkillsInput,
   routineExecutables,
+  type RoutineSkillScopeRequired,
   type RoutineStartInput,
   type RoutineStartResult,
   RoutineError,
@@ -41,7 +42,9 @@ export class RoutineService extends Context.Service<
   RoutineService,
   {
     readonly list: (input: RoutineListInput) => Effect.Effect<RoutineListResult, RoutineError>;
-    readonly start: (input: RoutineStartInput) => Effect.Effect<RoutineStartResult, RoutineError>;
+    readonly start: (
+      input: RoutineStartInput,
+    ) => Effect.Effect<RoutineStartResult, RoutineError | RoutineSkillScopeRequired>;
     readonly approve: (
       input: RoutineApproveInput,
     ) => Effect.Effect<RoutineApproveResult, RoutineError>;
