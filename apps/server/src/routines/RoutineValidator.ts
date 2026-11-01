@@ -24,6 +24,26 @@ export function validateRoutine(def: RoutineDefinition): RoutineValidationIssue[
     if (!indexById.has(step.id)) indexById.set(step.id, index);
   });
 
+  const successors = (step: RoutineStep): ReadonlyArray<string> => [
+    ...(step.next ?? []),
+    ...Object.values(step.on ?? {}).filter((target) => target !== "$end"),
+    ...(step.onError === undefined ? [] : [step.onError]),
+  ];
+
+  /** Every step reachable from `from` by at least one transition. */
+  const reachableFrom = (from: ReadonlyArray<string>): Set<string> => {
+    const found = new Set<string>();
+    const queue = [...from];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (found.has(id)) continue;
+      found.add(id);
+      const step = steps[indexById.get(id) ?? -1];
+      if (step !== undefined) queue.push(...successors(step));
+    }
+    return found;
+  };
+
   const checkBackEdge = (
     target: string,
     path: string,
@@ -82,10 +102,13 @@ export function validateRoutine(def: RoutineDefinition): RoutineValidationIssue[
     step.inputs?.forEach((ref, j) => {
       if (!indexById.has(ref)) {
         push("unknown-step-ref", `Unknown step "${ref}".`, `steps[${i}].inputs[${j}]`, step.id);
-      } else if (indexById.get(ref)! >= i) {
+      } else if (
+        indexById.get(ref)! >= i &&
+        !reachableFrom(successors(steps[indexById.get(ref)!]!)).has(step.id)
+      ) {
         push(
           "input-not-earlier",
-          `Input "${ref}" is not declared before this step.`,
+          `Input "${ref}" is not declared before this step and no loop leads from it to this step.`,
           `steps[${i}].inputs[${j}]`,
           step.id,
         );
@@ -153,28 +176,7 @@ export function validateRoutine(def: RoutineDefinition): RoutineValidationIssue[
     push("unknown-step-ref", `Unknown start step "${def.start}".`, "start");
   }
 
-  const reachable = new Set<string>();
-  if (indexById.has(startId)) {
-    const queue: string[] = [startId];
-    reachable.add(startId);
-    while (queue.length > 0) {
-      const id = queue.shift()!;
-      const step = steps[indexById.get(id) ?? -1];
-      if (step === undefined) continue;
-      const targets: string[] = [];
-      step.next?.forEach((ref) => targets.push(ref));
-      if (step.on !== undefined) {
-        for (const target of Object.values(step.on)) if (target !== "$end") targets.push(target);
-      }
-      if (step.onError !== undefined) targets.push(step.onError);
-      for (const target of targets) {
-        if (indexById.has(target) && !reachable.has(target)) {
-          reachable.add(target);
-          queue.push(target);
-        }
-      }
-    }
-  }
+  const reachable = indexById.has(startId) ? reachableFrom([startId]) : new Set<string>();
   steps.forEach((step, i) => {
     if (!reachable.has(step.id)) {
       push(

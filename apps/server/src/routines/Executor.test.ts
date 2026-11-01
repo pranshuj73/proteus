@@ -828,6 +828,41 @@ it.effect("starting an invalid routine fails with RoutineError", () =>
   ),
 );
 
+it.effect("a loop passes a later step's output back from the second pass", () => {
+  const seen: Array<string> = [];
+  return withExecutor(
+    {
+      seen,
+      failing: ["make"],
+      verdictText: "VERDICT: done - fixed",
+      routine: {
+        version: 1,
+        name: "demo",
+        steps: [
+          {
+            id: "fix",
+            kind: "agent",
+            purpose: "Fix it",
+            inputs: ["check"],
+            maxIterations: 2,
+            verdict: { labels: ["done"] },
+            on: { done: "check" },
+          },
+          { id: "check", kind: "command", argv: ["make"], on: { pass: "$end", fail: "fix" } },
+        ],
+      },
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        yield* awaitSettled(executor, execution.id);
+        const prompts = seen.filter((entry) => entry.includes("VERDICT:"));
+        assert.notInclude(prompts[0] ?? "", 'Output of step "check"');
+        assert.include(prompts[1] ?? "", 'Output of step "check"');
+      }),
+  );
+});
+
 it.effect("a verdict loop retries with increasing attempts until maxIterations parks it", () =>
   withExecutor(
     {

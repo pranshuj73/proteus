@@ -107,7 +107,7 @@ const cases: ReadonlyArray<{
   {
     code: "input-not-earlier",
     mutate: (r) => {
-      r.steps[3]!.inputs = ["rework"];
+      r.steps[0]!.inputs = ["review"];
     },
   },
   {
@@ -138,6 +138,12 @@ const cases: ReadonlyArray<{
 describe("validateRoutine", () => {
   it("reports no issues for a valid routine with a bounded loop and fan-out/join", () => {
     expect(validateRoutine(decode(baseRoutine()))).toEqual([]);
+  });
+
+  it("accepts an input from a later step that loops back", () => {
+    const routine = baseRoutine();
+    routine.steps[1]!.inputs = ["rework"];
+    expect(validateRoutine(decode(routine))).toEqual([]);
   });
 
   it.each(cases)("reports $code", (testCase) => {
