@@ -20,6 +20,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "../ui/dialog";
+import { Checkbox } from "../ui/checkbox";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -29,6 +30,7 @@ export function RoutineRunDialog({
   projectId,
   routineId,
   routineName,
+  installsSkills,
   disabled,
   onStarted,
 }: {
@@ -36,12 +38,15 @@ export function RoutineRunDialog({
   readonly projectId: ProjectId;
   readonly routineId: RoutineId;
   readonly routineName: string;
+  /** The routine references remote skills that preflight may install. */
+  readonly installsSkills: boolean;
   readonly disabled: boolean;
   readonly onStarted: (executionId: RoutineExecutionId) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [brief, setBrief] = useState("");
   const [busy, setBusy] = useState(false);
+  const [installGlobally, setInstallGlobally] = useState(false);
   const start = useAtomCommand(serverEnvironment.startRoutine, { label: "routine start" });
 
   const run = async () => {
@@ -49,7 +54,12 @@ export function RoutineRunDialog({
     setBusy(true);
     const result = await start({
       environmentId,
-      input: { projectId, routineId, brief: brief.trim() },
+      input: {
+        projectId,
+        routineId,
+        brief: brief.trim(),
+        skillScope: installGlobally ? "global" : "project",
+      },
     });
     setBusy(false);
     if (result._tag === "Success") {
@@ -111,6 +121,19 @@ export function RoutineRunDialog({
                 rows={4}
               />
             </div>
+            {installsSkills ? (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="routine-run-global-skills"
+                  checked={installGlobally}
+                  disabled={busy}
+                  onCheckedChange={(checked) => setInstallGlobally(checked === true)}
+                />
+                <Label htmlFor="routine-run-global-skills">
+                  Install missing skills globally instead of in this project
+                </Label>
+              </div>
+            ) : null}
             <p className="text-2xs text-muted-foreground">
               Runs on the project's default model. Model overrides land in a later ticket.
             </p>

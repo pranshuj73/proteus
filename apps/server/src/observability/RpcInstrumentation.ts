@@ -100,6 +100,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.routinesComplete]: "routines",
   [WS_METHODS.routinesControl]: "routines",
   [WS_METHODS.routinesRevoke]: "routines",
+  [WS_METHODS.routinesUpdateSkills]: "routines",
   [WS_METHODS.routinesRemoveExecutable]: "routines",
   [WS_METHODS.routinesApprove]: "routines",
   [WS_METHODS.routinesSubscribeExecutions]: "routines",

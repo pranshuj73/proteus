@@ -19,6 +19,7 @@ import {
   type RoutineControlInput,
   type RoutineRemoveExecutableInput,
   type RoutineRevokeInput,
+  type RoutineUpdateSkillsInput,
   routineExecutables,
   type RoutineStartInput,
   type RoutineStartResult,
@@ -52,6 +53,7 @@ export class RoutineService extends Context.Service<
     ) => Effect.Effect<RoutineCompleteResult, RoutineError>;
     readonly control: (input: RoutineControlInput) => Effect.Effect<void, RoutineError>;
     readonly revoke: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
+    readonly updateSkills: (input: RoutineUpdateSkillsInput) => Effect.Effect<void, RoutineError>;
     readonly removeExecutable: (
       input: RoutineRemoveExecutableInput,
     ) => Effect.Effect<void, RoutineError>;
@@ -132,6 +134,7 @@ const make = Effect.gen(function* () {
     subscribeExecutions: (input) => executor.subscribeExecutions(input.projectId),
     subscribeExecution: (input) => executor.subscribeExecution(input.executionId),
     councilRecords: executor.councilRecords,
+    updateSkills: executor.updateSkills,
     regenerateSummary: executor.regenerateSummary,
   });
 });

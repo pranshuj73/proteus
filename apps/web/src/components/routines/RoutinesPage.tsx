@@ -226,6 +226,54 @@ function RoutineApproveButton({
   );
 }
 
+function UpdateSkillsButton({
+  environmentId,
+  projectId,
+  routineId,
+  onUpdated,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly routineId: RoutineSummary["id"];
+  readonly onUpdated: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const update = useAtomCommand(serverEnvironment.updateRoutineSkills, {
+    label: "routine update skills",
+  });
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await update({ environmentId, input: { projectId, routineId } });
+    setBusy(false);
+    if (result._tag === "Success") {
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title: "Skills updated",
+          description: "Commit the changes, then approve the routine again.",
+        }),
+      );
+      onUpdated();
+      return;
+    }
+    if (!isAtomCommandInterrupted(result)) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not update skills",
+          description: String(squashAtomCommandFailure(result)),
+        }),
+      );
+    }
+  };
+  return (
+    <Button size="compact" variant="outline" disabled={busy} onClick={() => void run()}>
+      {busy ? "Updating…" : "Update skills"}
+    </Button>
+  );
+}
+
 function RoutineCard({
   summary,
   environmentId,
@@ -245,6 +293,9 @@ function RoutineCard({
   const name = summary.definition?.name ?? summary.id;
   const [reviewed, setReviewed] = useState(false);
   const canApprove = useAtomValue(serverEnvironment.approveRoutine.permissionAtom(environmentId));
+  const hasRemoteSkills = (summary.definition?.steps ?? []).some(
+    (step) => step.kind === "skill" && step.skill.includes("@"),
+  );
   const revoke = useAtomCommand(serverEnvironment.revokeRoutine, { label: "routine revoke" });
 
   return (
@@ -286,6 +337,14 @@ function RoutineCard({
               Revoke
             </Button>
           ) : null}
+          {hasRemoteSkills && canApprove ? (
+            <UpdateSkillsButton
+              environmentId={environmentId}
+              projectId={projectId}
+              routineId={summary.id}
+              onUpdated={onApproved}
+            />
+          ) : null}
           <EditRoutineButton
             environmentId={environmentId}
             projectId={projectId}
@@ -296,6 +355,7 @@ function RoutineCard({
             projectId={projectId}
             routineId={summary.id}
             routineName={name}
+            installsSkills={hasRemoteSkills}
             disabled={!valid || !summary.approved}
             onStarted={onSelectExecution}
           />

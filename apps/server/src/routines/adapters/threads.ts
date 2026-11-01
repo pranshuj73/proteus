@@ -70,6 +70,8 @@ interface RoutineAgentStepInput {
 interface RoutineAgentStepResult {
   readonly threadId: ThreadId;
   readonly verdictText: string;
+  /** Context size of the thread after the turn; null when the provider reports none. */
+  readonly contextTokens: number | null;
 }
 
 /** Council model and whether it differs from the step author's model. */
@@ -316,7 +318,11 @@ const make = Effect.gen(function* () {
     const lastAssistant = [...projection.messages]
       .reverse()
       .find((message) => message.role === "assistant");
-    return { threadId, verdictText: lastAssistant?.text ?? "" };
+    const usage = projection.providerThreads.flatMap((thread) =>
+      thread.contextUsage == null ? [] : [thread.contextUsage.usedTokens],
+    );
+    const contextTokens = usage.length === 0 ? null : Math.max(...usage);
+    return { threadId, verdictText: lastAssistant?.text ?? "", contextTokens };
   });
 
   const stopThread: RoutineThreadRunner["Service"]["stopThread"] = Effect.fn(

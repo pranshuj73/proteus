@@ -7,11 +7,10 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { RoutineProcessRunner } from "../adapters/process.ts";
-import { hashSkillFolder, listInstalledSkills } from "../skills.ts";
+import { listInstalledSkills } from "../skills.ts";
 import { RoutineSkillInstaller, runSkillPreflight } from "./preflight.ts";
 
 const definition = Schema.decodeSync(RoutineDefinition)({
@@ -56,6 +55,7 @@ const setup = Effect.gen(function* () {
 });
 
 const fakeInstaller = Layer.succeed(RoutineSkillInstaller)({
+  update: () => Effect.void,
   install: ({ cwd, name }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -93,27 +93,31 @@ it.effect("installs a locked skill, links it and commits it", () =>
   }).pipe(Effect.scoped, Effect.provide(env)),
 );
 
-it.effect("aborts on a hash mismatch and on an unpinned remote skill", () =>
+it.effect("a global scope uses the home copy, with no lock pin or project commit", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
+    const root = yield* setup;
+    const home = yield* fs.makeTempDirectoryScoped();
+    yield* fs.makeDirectory(`${home}/.claude/skills/plan`, { recursive: true });
+    yield* fs.writeFileString(`${home}/.claude/skills/plan/SKILL.md`, "body");
+    const before = git(root, "rev-parse", "HEAD");
+    const hashes = yield* runSkillPreflight({
+      worktreePath: root,
+      definition,
+      providers: ["claudeAgent"],
+      globalHome: home,
+    });
+    assert.strictEqual(hashes.size, 1);
+    assert.strictEqual(git(root, "rev-parse", "HEAD"), before);
+  }).pipe(Effect.scoped, Effect.provide(env)),
+);
+
+it.effect("aborts on an unpinned remote skill", () =>
+  Effect.gen(function* () {
     const root = yield* setup;
     const unpinned = yield* Effect.flip(
       runSkillPreflight({ worktreePath: root, definition, providers: [] }),
     );
     assert.match(unpinned.message, /not pinned/);
-
-    yield* fs.makeDirectory(path.join(root, ".agents/skills/plan"), { recursive: true });
-    yield* fs.writeFileString(`${root}/.agents/skills/plan/SKILL.md`, "---\nname: plan\n---\n");
-    const expected = yield* hashSkillFolder(`${root}/.agents/skills/plan`);
-    yield* fs.writeFileString(
-      `${root}/skills-lock.json`,
-      JSON.stringify({ skills: { plan: { source: "acme/skills", computedHash: expected } } }),
-    );
-    yield* fs.writeFileString(`${root}/.agents/skills/plan/SKILL.md`, "tampered");
-    const drift = yield* Effect.flip(
-      runSkillPreflight({ worktreePath: root, definition, providers: [] }),
-    );
-    assert.match(drift.message, /locked hash/);
   }).pipe(Effect.scoped, Effect.provide(env)),
 );

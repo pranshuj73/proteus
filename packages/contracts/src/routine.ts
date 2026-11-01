@@ -101,6 +101,8 @@ export const RoutineCouncilConfig = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   /** Questions answered per step before the step stops; defaults to 5. */
   maxQuestionsPerStep: Schema.optional(PositiveInt),
+  /** Context size at which the council thread stops and a retry starts a fresh one; defaults to 200000. */
+  maxTokens: Schema.optional(PositiveInt),
 });
 export type RoutineCouncilConfig = typeof RoutineCouncilConfig.Type;
 
@@ -280,11 +282,16 @@ export const RoutineExecution = Schema.Struct({
 });
 export type RoutineExecution = typeof RoutineExecution.Type;
 
+export const RoutineSkillScope = Schema.Literals(["project", "global"]);
+export type RoutineSkillScope = typeof RoutineSkillScope.Type;
+
 export const RoutineStartInput = Schema.Struct({
   projectId: ProjectId,
   routineId: RoutineId,
   brief: Schema.String,
   modelSelection: Schema.optional(ModelSelection),
+  /** Where preflight installs missing skills; defaults to project. */
+  skillScope: Schema.optional(RoutineSkillScope),
 });
 export type RoutineStartInput = typeof RoutineStartInput.Type;
 
@@ -312,6 +319,9 @@ export const RoutineRevokeInput = Schema.Struct({
   routineId: RoutineId,
 });
 export type RoutineRevokeInput = typeof RoutineRevokeInput.Type;
+
+export const RoutineUpdateSkillsInput = RoutineRevokeInput;
+export type RoutineUpdateSkillsInput = typeof RoutineUpdateSkillsInput.Type;
 
 export const RoutineRemoveExecutableInput = Schema.Struct({
   projectId: ProjectId,

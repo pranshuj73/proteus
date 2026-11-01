@@ -1328,6 +1328,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:routines:revoke",
       tag: WS_METHODS.routinesRevoke,
     }),
+    updateRoutineSkills: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:routines:update-skills",
+      tag: WS_METHODS.routinesUpdateSkills,
+    }),
     removeRoutineExecutable: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:routines:remove-executable",
       tag: WS_METHODS.routinesRemoveExecutable,

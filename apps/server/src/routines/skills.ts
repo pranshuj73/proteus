@@ -17,6 +17,24 @@ const PROVIDER_SKILL_DIRS: Readonly<Record<string, string>> = {
   opencode: ".opencode/skills",
 };
 
+/** `skills add -a` agent and home-relative global directory per provider. */
+const GLOBAL_SKILL_TARGETS: Readonly<Record<string, { agent: string; dir: string }>> = {
+  claudeAgent: { agent: "claude-code", dir: ".claude/skills" },
+  codex: { agent: "codex", dir: ".codex/skills" },
+  cursor: { agent: "cursor", dir: ".cursor/skills" },
+  opencode: { agent: "opencode", dir: ".config/opencode/skills" },
+};
+
+export const globalSkillTargets = (providers: ReadonlyArray<string>) =>
+  providers.flatMap((provider) => {
+    const target = GLOBAL_SKILL_TARGETS[provider];
+    return target === undefined ? [] : [target];
+  });
+
+/** Every global directory a skill may live in, whichever provider installed it. */
+export const allGlobalSkillDirs = (): ReadonlyArray<string> =>
+  Object.values(GLOBAL_SKILL_TARGETS).map((target) => target.dir);
+
 export interface SkillRef {
   /** `owner/repo` for a remote skill; undefined for a plain local name. */
   readonly source: string | undefined;
@@ -46,7 +64,6 @@ const LockFile = Schema.Struct({
     Schema.String,
     Schema.Struct({
       source: Schema.optional(Schema.String),
-      computedHash: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -54,7 +71,6 @@ const decodeLock = Schema.decodeUnknownOption(Schema.fromJsonString(LockFile));
 
 export interface SkillPin {
   readonly source: string | undefined;
-  readonly hash: string | undefined;
 }
 
 /** Reads skills-lock.json pins; a missing or malformed lock yields no pins. */
@@ -67,7 +83,7 @@ export const readLock = Effect.fn("RoutineSkills.readLock")(function* (workspace
   const pins = new Map<string, SkillPin>();
   if (decoded._tag === "Some") {
     for (const [name, entry] of Object.entries(decoded.value.skills)) {
-      pins.set(name, { source: entry.source, hash: entry.computedHash });
+      pins.set(name, { source: entry.source });
     }
   }
   return pins;

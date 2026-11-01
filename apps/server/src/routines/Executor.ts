@@ -1,3 +1,5 @@
+import * as NodeOS from "node:os";
+
 import {
   type ModelSelection,
   type OrchestrationV2UserInputQuestion,
@@ -40,6 +42,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -55,7 +58,13 @@ import { RoutineGitProvisioner } from "./adapters/git.ts";
 import { RoutineThreadRunner, type RoutineWorkspaceStrategy } from "./adapters/threads.ts";
 import { ExecutionRepository, type ExecutionStepRecord } from "./ExecutionRepository.ts";
 import { RoutineSkillInstaller, runSkillPreflight } from "./steps/preflight.ts";
-import { SKILLS_DIR, hashSkillFolder, referencedSkills, skillDrift } from "./skills.ts";
+import {
+  SKILLS_DIR,
+  allGlobalSkillDirs,
+  hashSkillFolder,
+  referencedSkills,
+  skillDrift,
+} from "./skills.ts";
 import * as RoutineStore from "./RoutineStore.ts";
 import {
   abortMerge,
@@ -70,7 +79,9 @@ import {
 } from "./parallel.ts";
 import { attemptLimit, nextSteps, resolveReady } from "./routing.ts";
 import {
+  buildCouncilFollowUp,
   buildCouncilPrompt,
+  DEFAULT_MAX_COUNCIL_TOKENS,
   buildSummaryPrompt,
   DEFAULT_MAX_QUESTIONS_PER_STEP,
   flaggedHighlights,
@@ -87,6 +98,12 @@ import {
 
 const RESTART_ERROR = "Interrupted by a server restart";
 const COMMAND_RESTART_ERROR = `${RESTART_ERROR}. Its command may still be running, so check before resuming.`;
+interface CouncilSession {
+  readonly threadId: ThreadId;
+  readonly shownOutputs: ReadonlySet<string>;
+  readonly contextTokens: number;
+}
+
 const COUNCIL_TIMEOUT_MS = 10 * 60 * 1000;
 const SUMMARY_MAX_CHARS = 1500;
 const EARLIER_DECISIONS_LIMIT = 20;
@@ -137,6 +154,8 @@ export class Executor extends Context.Service<
     >;
     readonly control: (input: RoutineControlInput) => Effect.Effect<void, RoutineError>;
     readonly revoke: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
+    /** Pulls newer skill versions into the project; the routine needs approving again. */
+    readonly updateSkills: (input: RoutineRevokeInput) => Effect.Effect<void, RoutineError>;
     readonly removeExecutable: (
       input: RoutineRemoveExecutableInput,
     ) => Effect.Effect<void, RoutineError>;
@@ -183,6 +202,9 @@ const make = Effect.gen(function* () {
   const walkControls = new Map<RoutineExecutionId, WalkControl>();
   // Council threads are not step rows, so cancel needs its own list to stop them.
   const councilThreads = new Map<RoutineExecutionId, Set<ThreadId>>();
+  // In memory: after a restart the next question opens a new thread from the recorded decisions.
+  const councilSessions = new Map<RoutineExecutionId, Map<string, CouncilSession>>();
+  const councilLock = yield* Semaphore.make(1);
 
   const notify = PubSub.publish(changesPubSub, undefined).pipe(Effect.asVoid);
 
@@ -234,32 +256,61 @@ const make = Effect.gen(function* () {
       }
       const steps = yield* repository.listSteps(execution.id).pipe(Effect.mapError(toStepError));
       const council = yield* threads.resolveCouncilModel({ author, config: definition.council });
-      const prompt = buildCouncilPrompt({
-        routineName: definition.name,
-        routineDescription: definition.description,
-        brief: execution.brief,
-        stepLabel: stepLabel(step),
-        stepPurpose:
-          step.kind === "agent" ? step.purpose : step.kind === "skill" ? `Skill ${step.skill}` : "",
-        earlierDecisions: earlier.slice(-EARLIER_DECISIONS_LIMIT),
-        earlierOutputs: steps
-          .filter((row) => row.status === "done" && (row.outputExcerpt ?? "") !== "")
-          .slice(-EARLIER_OUTPUTS_LIMIT)
-          .map((row) => ({ stepId: row.stepId, excerpt: row.outputExcerpt ?? "" })),
-        questions: question.questions,
-      });
+      const sessions = councilSessions.get(execution.id) ?? new Map<string, CouncilSession>();
+      councilSessions.set(execution.id, sessions);
+      const sessionKey = `${council.selection.instanceId}:${council.selection.model}`;
+      const session = sessions.get(sessionKey);
+      const tokenCap = definition.council?.maxTokens ?? DEFAULT_MAX_COUNCIL_TOKENS;
+      if (session !== undefined && session.contextTokens >= tokenCap) {
+        sessions.delete(sessionKey);
+        return yield* new RoutineStepError({
+          message: `Council reached its limit of ${tokenCap} tokens for step "${step.id}"; a person needs to answer, or retry to start a fresh council.`,
+        });
+      }
+      const outputs = steps
+        .filter((row) => row.status === "done" && (row.outputExcerpt ?? "") !== "")
+        .map((row) => ({ stepId: row.stepId, excerpt: row.outputExcerpt ?? "" }));
+      const purpose =
+        step.kind === "agent" ? step.purpose : step.kind === "skill" ? `Skill ${step.skill}` : "";
+      const newOutputs = outputs.filter((output) => !session?.shownOutputs.has(output.stepId));
+      const prompt =
+        session !== undefined
+          ? buildCouncilFollowUp({
+              stepLabel: stepLabel(step),
+              stepPurpose: purpose,
+              earlierOutputs: newOutputs.slice(-EARLIER_OUTPUTS_LIMIT),
+              questions: question.questions,
+            })
+          : buildCouncilPrompt({
+              routineName: definition.name,
+              routineDescription: definition.description,
+              brief: execution.brief,
+              stepLabel: stepLabel(step),
+              stepPurpose: purpose,
+              earlierDecisions: earlier.slice(-EARLIER_DECISIONS_LIMIT),
+              earlierOutputs: outputs.slice(-EARLIER_OUTPUTS_LIMIT),
+              questions: question.questions,
+            });
       const councilSet = councilThreads.get(execution.id) ?? new Set<ThreadId>();
       councilThreads.set(execution.id, councilSet);
-      const result = yield* threads.runAgentStep({
-        projectId: execution.projectId,
-        workspaceStrategy,
-        prompt,
-        modelSelection: council.selection,
-        title: `Council: ${stepLabel(step)}`,
-        timeoutMs: COUNCIL_TIMEOUT_MS,
-        runtimeMode: "approval-required",
-        declineApprovals: true,
-        onLaunched: (id) => Effect.sync(() => void councilSet.add(id)),
+      const result = yield* threads
+        .runAgentStep({
+          projectId: execution.projectId,
+          workspaceStrategy,
+          prompt,
+          modelSelection: council.selection,
+          title: `Council: ${definition.name}`,
+          continueThreadId: session?.threadId,
+          timeoutMs: COUNCIL_TIMEOUT_MS,
+          runtimeMode: "approval-required",
+          declineApprovals: true,
+          onLaunched: (id) => Effect.sync(() => void councilSet.add(id)),
+        })
+        .pipe(Effect.tapError(() => Effect.sync(() => sessions.delete(sessionKey))));
+      sessions.set(sessionKey, {
+        threadId: result.threadId,
+        shownOutputs: new Set(outputs.map((output) => output.stepId)),
+        contextTokens: result.contextTokens ?? 0,
       });
       const reply = parseCouncilReply(result.verdictText, question.questions);
       if (reply === null) {
@@ -294,7 +345,7 @@ const make = Effect.gen(function* () {
       }
       yield* notify;
       return reply.answers;
-    });
+    }, councilLock.withPermits(1));
 
   /** Writes the cached summary of a finished step's council decisions; no-op without any. */
   const summarizeStep = Effect.fn("Executor.summarizeStep")(function* (
@@ -872,9 +923,15 @@ const make = Effect.gen(function* () {
     );
     const skills: Record<string, string> = {};
     for (const ref of referencedSkills(definition)) {
-      const dir = path.join(workspaceRoot, SKILLS_DIR, ref.name);
-      const present = yield* fileSystem.exists(dir).pipe(Effect.orElseSucceed(() => false));
-      if (!present) continue;
+      const candidates = [
+        path.join(workspaceRoot, SKILLS_DIR, ref.name),
+        ...allGlobalSkillDirs().map((dir) => path.join(NodeOS.homedir(), dir, ref.name)),
+      ];
+      const found = yield* Effect.findFirst(candidates, (candidate) =>
+        fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
+      );
+      if (Option.isNone(found)) continue;
+      const dir = found.value;
       skills[ref.name] = yield* hashSkillFolder(dir).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -909,6 +966,18 @@ const make = Effect.gen(function* () {
     });
     return { routineId: input.routineId, approvedHash: hash };
   });
+
+  const updateSkills: Executor["Service"]["updateSkills"] = Effect.fn("Executor.updateSkills")(
+    function* (input) {
+      const { definition, workspaceRoot } = yield* loadRunnable(input.projectId, input.routineId);
+      const names = referencedSkills(definition)
+        .filter((ref) => ref.source !== undefined)
+        .map((ref) => ref.name);
+      if (names.length === 0) return;
+      yield* skillInstaller.update({ cwd: workspaceRoot, names });
+      yield* repository.deleteApproval(input);
+    },
+  );
 
   const start: Executor["Service"]["start"] = Effect.fn("Executor.start")(function* (input) {
     const { workspaceRoot, definition, hash } = yield* loadRunnable(
@@ -959,6 +1028,7 @@ const make = Effect.gen(function* () {
       worktreePath: worktree.worktreePath,
       definition,
       providers: modelSelection === undefined ? [] : [modelSelection.instanceId],
+      globalHome: input.skillScope === "global" ? NodeOS.homedir() : undefined,
     }).pipe(
       Effect.provideService(RoutineSkillInstaller, skillInstaller),
       Effect.provideContext(stepEnv),
@@ -977,7 +1047,7 @@ const make = Effect.gen(function* () {
     if (drifted.length > 0) {
       yield* removeWorktree;
       return yield* new RoutineError({
-        message: `Skills changed since approval: ${drifted.join(", ")}. Approve the routine again.`,
+        message: `Skills changed since approval: ${drifted.join(", ")}. Commit them if needed, then approve the routine again.`,
         routineId: input.routineId,
       });
     }
@@ -1134,6 +1204,7 @@ const make = Effect.gen(function* () {
       yield* threads.stopThread({ projectId: execution.projectId, threadId }).pipe(Effect.ignore);
     }
     councilThreads.delete(id);
+    councilSessions.delete(id);
     const finishedAt = yield* nowIso;
     for (const step of steps) {
       if (step.status === "running") {
@@ -1357,6 +1428,7 @@ const make = Effect.gen(function* () {
   return Executor.of({
     start,
     approve,
+    updateSkills,
     approvals: repository.listApprovals,
     cancel,
     complete,

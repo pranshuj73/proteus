@@ -58,6 +58,7 @@ interface Fakes {
   readonly question?: ReadonlyArray<OrchestrationV2UserInputQuestion>;
   readonly answers?: Array<unknown>;
   readonly councilText?: string;
+  readonly councilTokens?: number;
   readonly seen?: Array<string>;
   readonly gate?: Deferred.Deferred<void>;
   readonly stopped?: Array<string>;
@@ -170,15 +171,21 @@ const withExecutor = <A, E>(
                   return {
                     threadId: ThreadId.make(title),
                     verdictText: fakes.judgeText ?? "",
+                    contextTokens: null,
                   };
                 }
                 if (title.startsWith("Council summary")) {
-                  return { threadId: ThreadId.make("summary-thread"), verdictText: "- chose X" };
+                  return {
+                    threadId: ThreadId.make("summary-thread"),
+                    verdictText: "- chose X",
+                    contextTokens: null,
+                  };
                 }
                 if (title.startsWith("Council:")) {
                   return {
                     threadId: ThreadId.make("council-thread"),
                     verdictText: fakes.councilText ?? "",
+                    contextTokens: fakes.councilTokens ?? null,
                   };
                 }
                 if (fakes.question !== undefined && onQuestion !== undefined) {
@@ -201,6 +208,7 @@ const withExecutor = <A, E>(
                 return {
                   threadId: ThreadId.make("routine-thread"),
                   verdictText: fakes.verdictQueue?.shift() ?? fakes.verdictText ?? "",
+                  contextTokens: null,
                 };
               }),
             resolveDefaultModel: () =>
@@ -1302,6 +1310,56 @@ it.effect("a question beyond the per-step cap fails the step instead of waiting"
           settled.feed.map((block) => block.recordCount),
           [0],
         );
+      }),
+  ),
+);
+
+const twoAskRoutine = {
+  ...askRoutine,
+  steps: [
+    { id: "one", kind: "agent", purpose: "One", next: ["two"], verdict: { labels: ["ok"] } },
+    { id: "two", kind: "agent", purpose: "Two", verdict: { labels: ["ok"] } },
+  ],
+};
+const councilReply =
+  'COUNCIL: {"answers":{"scope":"narrow"},"rationale":"Smallest","confidence":"high"}';
+
+it.effect("later questions continue the execution's one council thread", () => {
+  const continued: Array<string> = [];
+  return withExecutor(
+    {
+      routine: twoAskRoutine,
+      verdictText: "VERDICT: ok - fine",
+      question: [question],
+      answers: [],
+      continued,
+      councilText: councilReply,
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.equal(settled.execution.status, "awaiting_review");
+        assert.isTrue(continued.includes("council-thread"));
+      }),
+  );
+});
+
+it.effect("a council thread over its token cap stops the step", () =>
+  withExecutor(
+    {
+      routine: { ...twoAskRoutine, council: { maxQuestionsPerStep: 1, maxTokens: 100 } },
+      verdictText: "VERDICT: ok - fine",
+      question: [question],
+      answers: [],
+      councilText: councilReply,
+      councilTokens: 100,
+    },
+    (executor) =>
+      Effect.gen(function* () {
+        const { execution } = yield* executor.start({ projectId, routineId, brief: "" });
+        const settled = yield* awaitSettled(executor, execution.id);
+        assert.match(settled.execution.error ?? "", /limit of 100 tokens/);
       }),
   ),
 );

@@ -384,6 +384,7 @@ import {
   RoutineRevokeInput,
   RoutineCompleteResult,
   RoutineCouncilRecordsInput,
+  RoutineUpdateSkillsInput,
   RoutineCouncilRecordsResult,
   RoutineError,
   RoutineExecutionInput,
@@ -573,6 +574,7 @@ export const WS_METHODS = {
   routinesComplete: "routines.complete",
   routinesControl: "routines.control",
   routinesRevoke: "routines.revoke",
+  routinesUpdateSkills: "routines.updateSkills",
   routinesRemoveExecutable: "routines.removeExecutable",
   routinesApprove: "routines.approve",
   routinesSubscribeExecutions: "routines.subscribeExecutions",
@@ -2004,6 +2006,11 @@ const WsRoutinesRevokeRpc = Rpc.make(WS_METHODS.routinesRevoke, {
   error: RoutineError,
 });
 
+const WsRoutinesUpdateSkillsRpc = Rpc.make(WS_METHODS.routinesUpdateSkills, {
+  payload: RoutineUpdateSkillsInput,
+  error: RoutineError,
+});
+
 const WsRoutinesRemoveExecutableRpc = Rpc.make(WS_METHODS.routinesRemoveExecutable, {
   payload: RoutineRemoveExecutableInput,
   error: RoutineError,
@@ -2140,6 +2147,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoutinesRevokeRpc,
   WsRoutinesRemoveExecutableRpc,
   WsRoutinesApproveRpc,
+  WsRoutinesUpdateSkillsRpc,
   WsRoutinesCouncilRecordsRpc,
   WsRoutinesRegenerateSummaryRpc,
   WsRoutinesSubscribeExecutionsRpc,

@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 
 import { RoutineProcessRunner } from "../adapters/process.ts";
 import {
+  globalSkillTargets,
   hashSkillFolder,
   isLinkHealthy,
   linkSkill,
@@ -25,6 +26,13 @@ export class RoutineSkillInstaller extends Context.Service<
       readonly cwd: string;
       readonly source: string;
       readonly name: string;
+      /** Installs globally for these CLI agents instead of into `cwd`. */
+      readonly globalAgents?: ReadonlyArray<string> | undefined;
+    }) => Effect.Effect<void, RoutineError>;
+    /** Updates installed project skills and their lock entries through `npx skills update`. */
+    readonly update: (input: {
+      readonly cwd: string;
+      readonly names: ReadonlyArray<string>;
     }) => Effect.Effect<void, RoutineError>;
   }
 >()("t3/routines/steps/preflight/RoutineSkillInstaller") {}
@@ -35,13 +43,15 @@ export interface SkillPreflightInput {
   readonly definition: RoutineDefinition;
   /** Provider driver kinds used by the routine's steps and council. */
   readonly providers: ReadonlyArray<string>;
+  /** Set for a global install: the home directory missing skills go under. */
+  readonly globalHome?: string | undefined;
 }
 
 const fail = (message: string) => new RoutineError({ message });
 
 /**
  * Verifies every referenced skill against skills-lock.json, installing missing ones, linking them
- * into provider directories and committing project installs. Any drift aborts the start.
+ * into provider directories and committing project installs. Drift from approval is checked by the caller.
  * Returns the folder hash per skill so approval can pin them.
  */
 export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* (
@@ -56,18 +66,55 @@ export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* 
   const pins = yield* readLock(input.worktreePath);
   const installer = yield* RoutineSkillInstaller;
   const process = yield* RoutineProcessRunner;
+  const globalTargets = input.globalHome === undefined ? [] : globalSkillTargets(input.providers);
+  if (input.globalHome !== undefined && globalTargets.length === 0) {
+    return yield* fail("These providers do not support global skills. Install to the project.");
+  }
   const linkDirs = providerSkillDirs(input.providers);
   let installedAny = false;
 
   for (const ref of refs) {
     const pin = pins.get(ref.name);
+    const projectDir = path.join(input.worktreePath, SKILLS_DIR, ref.name);
+    if (
+      input.globalHome !== undefined &&
+      ref.source !== undefined &&
+      !(yield* fs.exists(path.join(projectDir, "SKILL.md")))
+    ) {
+      // Global installs have no project lock; approval's pinned hash is their only drift check.
+      const globalDirs = globalTargets.map((target) =>
+        path.join(input.globalHome ?? "", target.dir, ref.name),
+      );
+      const present = yield* Effect.forEach(globalDirs, (dir) =>
+        fs.exists(path.join(dir, "SKILL.md")),
+      );
+      if (present.includes(false)) {
+        yield* installer.install({
+          cwd: input.worktreePath,
+          source: ref.source,
+          name: ref.name,
+          globalAgents: globalTargets.map((target) => target.agent),
+        });
+      }
+      const primary = globalDirs[0] ?? "";
+      if (!(yield* fs.exists(path.join(primary, "SKILL.md")))) {
+        return yield* fail(`Installing skill "${ref.name}" globally did not produce ${primary}.`);
+      }
+      const hash = yield* hashSkillFolder(primary).pipe(
+        Effect.mapError(
+          (cause) => new RoutineError({ message: `Cannot hash skill "${ref.name}".`, cause }),
+        ),
+      );
+      hashes.set(ref.name, hash);
+      continue;
+    }
     if (ref.source !== undefined && pin === undefined) {
       return yield* fail(`Skill "${ref.name}" is not pinned in ${SKILLS_LOCK}.`);
     }
     if (ref.source !== undefined && pin?.source !== undefined && pin.source !== ref.source) {
       return yield* fail(`Skill "${ref.name}" is locked to ${pin.source}, not ${ref.source}.`);
     }
-    const dir = path.join(input.worktreePath, SKILLS_DIR, ref.name);
+    const dir = projectDir;
     if (!(yield* fs.exists(path.join(dir, "SKILL.md")))) {
       if (ref.source === undefined) {
         return yield* fail(`Local skill "${ref.name}" is missing from ${SKILLS_DIR}.`);
@@ -85,9 +132,7 @@ export const runSkillPreflight = Effect.fn("RoutineSkills.preflight")(function* 
         (cause) => new RoutineError({ message: `Cannot hash skill "${ref.name}".`, cause }),
       ),
     );
-    if (pin?.hash !== undefined && pin.hash !== hash) {
-      return yield* fail(`Skill "${ref.name}" does not match its locked hash.`);
-    }
+    // The lock's computedHash describes the registry source, not this copy; approval pins the copy.
     hashes.set(ref.name, hash);
     for (const providerDir of linkDirs) {
       yield* linkSkill({ workspaceRoot: input.worktreePath, providerDir, name: ref.name }).pipe(
@@ -128,7 +173,19 @@ export const installerLayer = Layer.effect(
       install: Effect.fn("RoutineSkills.install")(function* (input) {
         const result = yield* processRunner
           .run({
-            argv: ["npx", "--yes", "skills", "add", input.source, "--skill", input.name, "-y"],
+            argv: [
+              "npx",
+              "--yes",
+              "skills",
+              "add",
+              input.source,
+              "--skill",
+              input.name,
+              ...(input.globalAgents === undefined
+                ? ["-a", "claude-code"]
+                : ["-g", "-a", ...input.globalAgents]),
+              "-y",
+            ],
             cwd: input.cwd,
             timeoutMs: 120_000,
             maxOutputBytes: 4000,
@@ -137,6 +194,21 @@ export const installerLayer = Layer.effect(
         if (result.code !== 0 || result.timedOut) {
           return yield* new RoutineError({
             message: `Installing skill "${input.name}" from ${input.source} failed: ${result.output}`,
+          });
+        }
+      }),
+      update: Effect.fn("RoutineSkills.update")(function* (input) {
+        const result = yield* processRunner
+          .run({
+            argv: ["npx", "--yes", "skills", "update", ...input.names, "-p", "-y"],
+            cwd: input.cwd,
+            timeoutMs: 120_000,
+            maxOutputBytes: 4000,
+          })
+          .pipe(Effect.mapError((cause) => new RoutineError({ message: cause.message, cause })));
+        if (result.code !== 0 || result.timedOut) {
+          return yield* new RoutineError({
+            message: `Updating skills failed: ${result.output}`,
           });
         }
       }),
