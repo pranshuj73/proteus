@@ -30,3 +30,13 @@ export const gradeRoutine = (
   definition: RoutineDefinition,
   expectKinds: ReadonlyArray<string>,
 ): boolean => expectKinds.every((kind) => definition.steps.some((step) => step.kind === kind));
+
+/** A real sign-off gives the person at least two choices that lead to different places. */
+export const gradeHumanRouting = (definition: RoutineDefinition): boolean =>
+  definition.steps.some(
+    (step) =>
+      step.kind === "human" &&
+      step.verdict.labels.length >= 2 &&
+      step.verdict.labels.every((label) => step.on?.[label] !== undefined) &&
+      new Set(step.verdict.labels.map((label) => step.on?.[label])).size >= 2,
+  );

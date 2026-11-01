@@ -39,4 +39,11 @@ export const authorCases = [
     useCase: "An agent fixes lint errors, then pnpm lint runs; repeat until it passes.",
     expectKinds: ["command", "agent"],
   },
+  {
+    id: "author-human-signoff",
+    source: "issue #23: a person approves before work continues",
+    useCase: "Run the tests with pnpm test, ask me to approve, then push.",
+    expectKinds: ["command", "human", "action"],
+    expectHumanRouting: true,
+  },
 ];

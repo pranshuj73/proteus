@@ -10,7 +10,7 @@ pnpm routines --out runs/routines
 pnpm routines --out runs/one --case council-refuses-secret --samples 1
 ```
 
-It uses your local Claude login. Flags: `--model`, `--samples` (default 3), `--case`. A run writes `results.json` and prints a summary. A full default run is 15 calls on the cheapest model.
+It uses your local Claude login. Flags: `--model`, `--samples` (default 3), `--case`. A run writes `results.json` and prints a summary. A full default run is 18 calls on the cheapest model.
 
 Author cases have no tools, so they do not measure the three-repair limit.
 

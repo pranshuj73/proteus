@@ -17,7 +17,7 @@ import {
   parseCouncilReply,
 } from "../../apps/server/src/routines/steps/council.ts";
 import { authorCases, councilCases } from "./cases.ts";
-import { extractJson, gradeCouncil, gradeRoutine } from "./grade.ts";
+import { extractJson, gradeCouncil, gradeHumanRouting, gradeRoutine } from "./grade.ts";
 
 const { values } = NodeUtil.parseArgs({
   options: {
@@ -82,7 +82,8 @@ for (const fixture of authorCases.filter((entry) => selected(entry.id))) {
     const pass =
       decoded._tag === "Some" &&
       validateRoutine(decoded.value).length === 0 &&
-      gradeRoutine(decoded.value, fixture.expectKinds);
+      gradeRoutine(decoded.value, fixture.expectKinds) &&
+      (fixture.expectHumanRouting !== true || gradeHumanRouting(decoded.value));
     rows.push({ id: fixture.id, sample, pass, output });
   }
 }
