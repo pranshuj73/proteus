@@ -51,6 +51,7 @@ export interface RoutineStepContext {
   readonly awaitPerson?:
     | ((step: RoutineHumanStep) => Effect.Effect<RoutineStepOutcome>)
     | undefined;
+  readonly onBlocked?: ((reason: string | null) => Effect.Effect<void>) | undefined;
   readonly onThreadLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
 }
 

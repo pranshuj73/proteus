@@ -77,6 +77,14 @@ export function RoutineExecutionControls({
     );
   }
 
+  // The answer belongs in the step thread; the server has no decision to take here.
+  if (
+    execution.status === "needs_attention" &&
+    execution.error?.startsWith("Waiting in the step thread")
+  ) {
+    return null;
+  }
+
   // Conflicted branches finished their step, so the step comes from the merge error.
   const conflictStep = execution.error?.match(/^Merge conflict joining step "([^"]+)"/)?.[1];
   const conflicted = execution.definition.steps.find((step) => step.id === conflictStep);

@@ -63,6 +63,8 @@ interface RoutineAgentStepInput {
   /** Declines every approval request the thread raises instead of waiting on a human. */
   readonly declineApprovals?: boolean | undefined;
   readonly onLaunched?: ((threadId: ThreadId) => Effect.Effect<void>) | undefined;
+  /** Told when the thread starts or stops waiting on a person; the timeout waits with them. */
+  readonly onBlocked?: ((reason: string | null) => Effect.Effect<void>) | undefined;
   /** Sends the prompt as a follow-up turn on this thread instead of launching a new one. */
   readonly continueThreadId?: ThreadId | undefined;
 }
@@ -80,7 +82,26 @@ export interface RoutineCouncilModel {
   readonly independent: boolean;
 }
 
+/** What a person must answer in the thread: approvals, auth and secrets, not questions. */
+const blockingReason = (projection: {
+  readonly runtimeRequests: ReadonlyArray<{ readonly kind: string; readonly status: string }>;
+  readonly turnItems: ReadonlyArray<{ readonly type: string; readonly secretStatus?: string }>;
+}): string | null => {
+  if (
+    projection.turnItems.some(
+      (item) => item.type === "secret_request" && item.secretStatus === "pending",
+    )
+  ) {
+    return `${WAITING_IN_THREAD}: a secret is needed.`;
+  }
+  const request = projection.runtimeRequests.find(
+    (candidate) => candidate.status === "pending" && candidate.kind !== "user_input",
+  );
+  return request === undefined ? null : `${WAITING_IN_THREAD}: an approval is needed.`;
+};
+
 const isRoutineError = Schema.is(RoutineError);
+const WAITING_IN_THREAD = "Waiting in the step thread";
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Confines every orchestration-v2 launch/await dependency behind one routine-facing seam. */
@@ -146,6 +167,7 @@ const make = Effect.gen(function* () {
   const watchRequests = (
     input: RoutineAgentStepInput,
     threadId: ThreadId,
+    blocked: { reason: string | null },
   ): Effect.Effect<never, RoutineStepError> => {
     const handled = new Set<string>();
     const scan = Effect.gen(function* () {
@@ -174,6 +196,13 @@ const make = Effect.gen(function* () {
         } else if (input.declineApprovals === true && request.kind !== "auth_refresh") {
           handled.add(request.id);
           yield* respond(threadId, request.id, { decision: "decline" });
+        }
+      }
+      if (input.onBlocked !== undefined) {
+        const reason = blockingReason(projection);
+        if (reason !== blocked.reason) {
+          blocked.reason = reason;
+          yield* input.onBlocked(reason);
         }
       }
     });
@@ -292,11 +321,36 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-    const watching = input.onQuestion !== undefined || input.declineApprovals === true;
+    const blocked = { reason: null as string | null };
+    const waitPastPeople = Effect.gen(function* () {
+      while (true) {
+        const result = yield* waitForRun;
+        if (!result.timedOut || input.onBlocked === undefined) return result;
+        const current = yield* threadManagement
+          .getThreadProjection(threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new RoutineStepError({ message: "Failed to read agent thread.", cause }),
+            ),
+          );
+        if (blockingReason(current) === null) return result;
+      }
+    });
+    const watching =
+      input.onQuestion !== undefined ||
+      input.declineApprovals === true ||
+      input.onBlocked !== undefined;
     const wait = watching
-      ? yield* Effect.raceFirst(waitForRun, watchRequests(input, threadId)).pipe(
+      ? yield* Effect.raceFirst(waitPastPeople, watchRequests(input, threadId, blocked)).pipe(
           Effect.tapError(() =>
             Effect.ignore(stopThread({ projectId: input.projectId, threadId })),
+          ),
+          Effect.ensuring(
+            Effect.suspend(() =>
+              blocked.reason === null || input.onBlocked === undefined
+                ? Effect.void
+                : input.onBlocked(null),
+            ),
           ),
         )
       : yield* waitForRun;

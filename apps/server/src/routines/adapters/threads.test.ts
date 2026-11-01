@@ -105,3 +105,49 @@ it.effect("an unanswered request fails the step when its wait times out", () =>
     assert.include(error.message, "did not finish before the step timeout");
   }),
 );
+
+it.effect("a blocked thread reports it, and the step timeout waits for the person", () =>
+  Effect.gen(function* () {
+    const reported = yield* Deferred.make<void>();
+    const blocked: Array<string | null> = [];
+    let pending = true;
+    let waits = 0;
+    const runner = yield* RoutineThreadRunner.pipe(
+      Effect.provide(
+        runnerLayer({
+          streamDomainEvents: Stream.never,
+          getThreadProjection: () =>
+            Effect.sync(
+              () =>
+                ({
+                  runtimeRequests: pending
+                    ? [{ id: "approval", kind: "command", status: "pending" }]
+                    : [],
+                  turnItems: [],
+                  messages: [{ role: "assistant", text: "VERDICT: ok - done" }],
+                  providerThreads: [],
+                }) as never,
+            ),
+          waitForThread: () =>
+            Effect.gen(function* () {
+              yield* Deferred.await(reported);
+              waits += 1;
+              if (waits === 2) pending = false;
+              return { threadId, run: null, timedOut: waits === 1 } as never;
+            }),
+        }),
+      ),
+    );
+    const result = yield* runner.runAgentStep({
+      ...stepInput,
+      onBlocked: (reason) =>
+        Effect.sync(() => void blocked.push(reason)).pipe(
+          Effect.andThen(Deferred.succeed(reported, undefined)),
+          Effect.asVoid,
+        ),
+    });
+    assert.equal(result.verdictText, "VERDICT: ok - done");
+    assert.equal(waits, 2);
+    assert.deepEqual(blocked, ["Waiting in the step thread: an approval is needed.", null]);
+  }),
+);

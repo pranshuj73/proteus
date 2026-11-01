@@ -88,6 +88,7 @@ export const runAgentOrSkillStep = Effect.fn("RoutineSteps.runAgentOrSkillStep")
       modelSelection: context.modelSelection,
       title: step.title ?? step.id,
       onLaunched: context.onThreadLaunched,
+      onBlocked: context.onBlocked,
       ...(context.answerQuestion === undefined ? {} : { onQuestion: context.answerQuestion }),
       ...(step.timeoutMs === undefined ? {} : { timeoutMs: step.timeoutMs }),
     });

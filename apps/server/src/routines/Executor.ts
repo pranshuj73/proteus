@@ -577,6 +577,15 @@ const make = Effect.gen(function* () {
                 return output === undefined ? [] : [{ stepId, output }];
               }),
               awaitPerson,
+              onBlocked: (reason) =>
+                Effect.flatMap(nowIso, (updatedAt) =>
+                  persistExecution({
+                    ...initial,
+                    status: reason === null ? "running" : "needs_attention",
+                    error: reason,
+                    updatedAt,
+                  }),
+                ),
               onThreadLaunched: (threadId) =>
                 Effect.suspend(() => {
                   launchedThread = threadId;
